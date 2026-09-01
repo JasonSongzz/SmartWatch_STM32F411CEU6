@@ -1,0 +1,61 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: 42 3 * * *
+
+name: Mynewt
+
+concurrency:
+  group: mynewt-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  environment:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+    - uses: actions/setup-go@v3
+      with:
+        go-version: 'stable'
+    - uses: carlosperate/arm-none-eabi-gcc-action@v1
+      with:
+          release: '15.2.Rel1'
+    - name: Print the environment
+      run: |
+        uname -a
+        lscpu
+        free
+        pwd
+    - name: Native setup
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-multilib
+    - name: Install newt
+      shell: bash
+      run: |
+        go version
+        go install mynewt.apache.org/newt/newt@latest
+        newt version
+    - name: Setup Mynewt
+      shell: bash
+      run: |
+        newt new build
+        rm build/targets/* -rf
+        cp -r ci/mynewt_targets/* build/targets
+        cp -f ci/mynewt_project.yml build/project.yml
+        cd build
+        newt upgrade --shallow=1
+        rm -rf repos/mcuboot
+        git clone .. repos/mcuboot
+    - name: Mynewt run
+      shell: bash
+      run: |
+        cd build
+        newt build `ls targets`
+        newt test @mcuboot/boot/boot_serial
