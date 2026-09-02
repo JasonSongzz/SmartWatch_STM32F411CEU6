@@ -22,6 +22,8 @@
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
+#include "storage_service.h"
+#include "lvgl_task.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -49,9 +51,15 @@
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
+osThreadId_t lvglTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 2048,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+const osThreadAttr_t lvglTask_attributes = {
+  .name = "lvglTask",
+  .stack_size = 2048,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -93,6 +101,7 @@ void MX_FREERTOS_Init(void) {
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  lvglTaskHandle = osThreadNew(lvgl_task_entry, NULL, &lvglTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -114,6 +123,7 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  (void)storage_service_init();
   /* Infinite loop */
   for(;;)
   {
