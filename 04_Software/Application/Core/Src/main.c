@@ -24,6 +24,7 @@
 #include "iwdg.h"
 #include "spi.h"
 #include "gpio.h"
+#include "delay.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -85,6 +86,9 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
+
+  /* Enable the Cortex-M cycle counter used by software I2C delay_us(). */
+  delay_init();
 
   /* USER CODE BEGIN SysInit */
 
