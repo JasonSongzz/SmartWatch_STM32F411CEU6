@@ -43,10 +43,15 @@ bool drv_adapter_accel_wakeup(uint32_t index)
            s_dev[index].wakeup(&s_dev[index]);
 }
 
-void drv_adapter_accel_read(uint32_t index, float *x, float *y, float *z)
+bool drv_adapter_accel_read(uint32_t index, float *x, float *y, float *z)
 {
-    if (index < ACCEL_DEV_MAX && s_dev[index].read_cached != NULL)
-    {
-        s_dev[index].read_cached(&s_dev[index], x, y, z);
-    }
+    return index < ACCEL_DEV_MAX && x != NULL && y != NULL && z != NULL &&
+           s_dev[index].read_cached != NULL &&
+           s_dev[index].read_cached(&s_dev[index], x, y, z);
+}
+
+bool drv_adapter_accel_sample(uint32_t index, float *x, float *y, float *z)
+{
+    return drv_adapter_accel_refresh(index) &&
+           drv_adapter_accel_read(index, x, y, z);
 }

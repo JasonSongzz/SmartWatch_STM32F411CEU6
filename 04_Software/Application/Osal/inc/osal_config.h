@@ -5,7 +5,8 @@
 #define OSAL_BACKEND_ZEPHYR     (2U)
 #define OSAL_BACKEND_RTTHREAD   (3U)
 
-/* Select exactly one backend in the build configuration. */
+/* Selected by Osal/CMakeLists.txt. A direct non-CMake integration may define
+ * OSAL_BACKEND before including this header. */
 #ifndef OSAL_BACKEND
 #define OSAL_BACKEND OSAL_BACKEND_FREERTOS
 #endif

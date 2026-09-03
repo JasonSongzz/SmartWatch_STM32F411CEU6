@@ -36,6 +36,7 @@ add_executable(${CMAKE_PROJECT_NAME})
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
+add_subdirectory(Osal)
 
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
@@ -45,28 +46,32 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Bsp/TempHumi/bsp_aht21_driver.c
+    Bsp/TempHumi/bsp_sht30_driver.c
+    Bsp/TempHumi/bsp_temp_humi_handler.c
     Bsp/Accel/bsp_mpu6050_driver.c
-    Bsp/Accel/bsp_accel_xxx_handler.c
+    Bsp/Accel/bsp_accel_handler.c
     Bsp/Display/bsp_st7789t3_driver.c
-    Bsp/Display/bsp_display_xxx_handler.c
+    Bsp/Display/bsp_display_handler.c
     Bsp/Touch/bsp_cst816t_driver.c
-    Bsp/Touch/bsp_touch_xxx_handler.c
+    Bsp/Touch/bsp_touch_handler.c
+    Bsp/SPIFlash/bsp_spiflash_driver.c
     Service/UI/ui_test.c
     Platform/Wrapper/drv_adapter_accel.c
+    Platform/Wrapper/drv_adapter_temphumi.c
     Platform/Wrapper/drv_adapter_display.c
     Platform/Wrapper/drv_adapter_touch.c
+    Platform/Wrapper/drv_adapter_flash.c
     Platform/Port/drv_adapter_port_accel.c
-    Platform/Port/drv_adapter_port_i2c.c
+    Platform/Port/drv_adapter_port_temphumi.c
+    Platform/Port/drv_adapter_port_sensors.c
     Platform/Port/drv_adapter_port_display.c
     Platform/Port/drv_adapter_port_touch.c
+    Platform/Port/drv_adapter_port_flash.c
     Platform/Port/lvgl_port_display.c
     Service/UI/lvgl_task.c
     Service/Storage/storage_service.c
-    Platform/Port/sfud_w25q64.c
-    Platform/Port/fal_w25q64.c
     Middlewares/Third_Party/sfud/src/sfud.c
     Middlewares/Third_Party/sfud/src/sfud_sfdp.c
-    Middlewares/Third_Party/sfud/port/sfud_port.c
     Middlewares/Third_Party/flashDB/src/fdb.c
     Middlewares/Third_Party/flashDB/src/fdb_kvdb.c
     Middlewares/Third_Party/flashDB/src/fdb_tsdb.c
@@ -74,36 +79,21 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Middlewares/Third_Party/flashDB/port/fal/src/fal.c
     Middlewares/Third_Party/flashDB/port/fal/src/fal_flash.c
     Middlewares/Third_Party/flashDB/port/fal/src/fal_partition.c
-    Osal/shared/src/osal_heap.c
-    Osal/shared/src/osal_mutex.c
-    Osal/shared/src/osal_queue.c
-    Osal/shared/src/osal_sema.c
-    Osal/shared/src/osal_task.c
-    Osal/shared/src/osal_timer.c
-    Osal/FreeRTOS/src/os_impl_heap.c
-    Osal/FreeRTOS/src/os_impl_mutex.c
-    Osal/FreeRTOS/src/os_impl_queue.c
-    Osal/FreeRTOS/src/os_impl_sema.c
-    Osal/FreeRTOS/src/os_impl_task.c
-    Osal/FreeRTOS/src/os_impl_timer.c
     Core/Src/delay.c
     Core/Src/iic_hal.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    Bsp/Common
     Bsp/TempHumi
     Bsp/Accel
     Bsp/Display
     Bsp/Touch
+    Bsp/SPIFlash
     Service/UI
     Service/Storage
     Platform/Wrapper
     Platform/Port
-    Osal/inc
-    Osal/shared/inc
-    Osal/FreeRTOS/inc
     Middlewares/Third_Party/sfud/inc
     Middlewares/Third_Party/flashDB/inc
     Middlewares/Third_Party/flashDB/port
@@ -135,6 +125,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
     lvgl
+    osal
 
     # Add user defined libraries
 )

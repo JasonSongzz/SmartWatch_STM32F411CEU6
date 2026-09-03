@@ -11,14 +11,20 @@ typedef struct temphumi_drv {
     void *user_data;
     bool (*init)(struct temphumi_drv *dev);
     bool (*refresh)(struct temphumi_drv *dev);
-    void (*read_cached)(struct temphumi_drv *dev, float *temp, float *humi);
+    bool (*read_cached)(struct temphumi_drv *dev, float *temp, float *humi);
+    bool (*sleep)(struct temphumi_drv *dev);
+    bool (*wakeup)(struct temphumi_drv *dev);
 } temphumi_drv_t;
 
 bool drv_adapter_temphumi_reg(uint32_t index, const temphumi_drv_t *dev);
 bool drv_adapter_temphumi_init(uint32_t index);
 bool drv_adapter_temphumi_refresh(uint32_t index);
-void drv_adapter_temphumi_read_temp_and_humi(uint32_t index,
+bool drv_adapter_temphumi_read_temp_and_humi(uint32_t index,
                                              float *temperature,
                                              float *humidity);
+bool drv_adapter_temphumi_sample(uint32_t index,
+                                 float *temperature, float *humidity);
+bool drv_adapter_temphumi_sleep(uint32_t index);
+bool drv_adapter_temphumi_wakeup(uint32_t index);
 
 #endif /* DRV_ADAPTER_TEMP_HUMI_H */
