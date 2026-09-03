@@ -1,159 +1,166 @@
 #include "bsp_cst816t_driver.h"
+
 #include <stddef.h>
 
-/* 超时定义（硬件 I2C 模式可用） */
-#define CST816T_IO_TIMEOUT_MS   (100U)
+typedef touch_status_t cst816t_status_t;
+typedef touch_iic_interface_t cst816t_iic_driver_interface_t;
+typedef touch_yield_interface_t cst816t_yield_interface_t;
+typedef touch_control_interface_t cst816t_control_interface_t;
+typedef touch_point_t cst816t_point_t;
+typedef bsp_touch_driver_t bsp_cst816t_driver_t;
 
-/* ---------- 临界区保护（与 AHT21 逻辑完全一致） ---------- */
-static void __enter_bus(const cst816t_iic_driver_interface_t *iic)
+#define CST816T_OK             TOUCH_OK
+#define CST816T_ERROR          TOUCH_ERROR
+#define CST816T_ERROR_PARAM    TOUCH_ERROR_PARAMETER
+#define CST816T_ERROR_RESOURCE TOUCH_ERROR_RESOURCE
+#define CST816T_NO_TOUCH       TOUCH_NO_TOUCH
+#define CST816T_ERROR_TIMEOUT  TOUCH_ERROR_TIMEOUT
+
+#define CST816T_IO_TIMEOUT_MS     (100U)
+#define CST816T_RESET_LOW_MS      (5U)
+#define CST816T_RESET_RECOVERY_MS (100U)
+
+static cst816t_status_t first_error(cst816t_status_t current,
+                                    cst816t_status_t candidate)
 {
-#ifndef HARDWARE_IIC
-    if (iic->pf_critical_enter != NULL) {
-        (void)iic->pf_critical_enter();
-    }
-#else
-    (void)iic;
-#endif
+    return current == CST816T_OK ? candidate : current;
 }
 
-static void __exit_bus(const cst816t_iic_driver_interface_t *iic)
+static cst816t_status_t lock_i2c(
+    const cst816t_iic_driver_interface_t *iic)
 {
-#ifndef HARDWARE_IIC
-    if (iic->pf_critical_exit != NULL) {
-        (void)iic->pf_critical_exit();
-    }
-#else
-    (void)iic;
-#endif
+    if (iic->pf_lock == NULL) return CST816T_OK;
+
+    return iic->pf_lock(iic->bus_context, CST816T_IO_TIMEOUT_MS);
 }
 
-/* ---------- I2C 读写（软件/硬件自适应） ---------- */
-static cst816t_status_t __read_register(bsp_cst816t_driver_t *touch,
-                                        uint8_t reg, uint8_t *data, uint16_t size)
+static cst816t_status_t unlock_i2c(
+    const cst816t_iic_driver_interface_t *iic)
 {
-    const cst816t_iic_driver_interface_t *iic = touch->p_iic_driver_instance;
-    cst816t_status_t status = CST816T_OK;
+    if (iic->pf_unlock == NULL) return CST816T_OK;
 
-    __enter_bus(iic);
-
-#ifdef HARDWARE_IIC
-    /* 硬件 I2C：需要底层支持带寄存器地址的读写 */
-    status = iic->pf_iic_read(iic->bus_context, CST816T_I2C_ADDRESS,
-                              reg, data, size, CST816T_IO_TIMEOUT_MS);
-#else
-    /* 软件 I2C：模拟时序 */
-    void *ctx = iic->bus_context;
-
-    (void)iic->pf_iic_start(ctx);
-    (void)iic->pf_iic_send_byte(ctx, (uint8_t)(CST816T_I2C_ADDRESS << 1));
-    if (iic->pf_iic_wait_ack(ctx) != CST816T_OK) {
-        status = CST816T_ERROR;
-        goto stop;
-    }
-
-    (void)iic->pf_iic_send_byte(ctx, reg);
-    if (iic->pf_iic_wait_ack(ctx) != CST816T_OK) {
-        status = CST816T_ERROR;
-        goto stop;
-    }
-
-    (void)iic->pf_iic_start(ctx);
-    (void)iic->pf_iic_send_byte(ctx, (uint8_t)((CST816T_I2C_ADDRESS << 1) | 0x01));
-    if (iic->pf_iic_wait_ack(ctx) != CST816T_OK) {
-        status = CST816T_ERROR;
-        goto stop;
-    }
-
-    for (uint16_t i = 0; i < size; i++) {
-        (void)iic->pf_iic_receive_byte(ctx, &data[i]);
-        if (i == size - 1) {
-            (void)iic->pf_iic_send_no_ack(ctx);
-        } else {
-            (void)iic->pf_iic_send_ack(ctx);
-        }
-    }
-
-stop:
-    (void)iic->pf_iic_stop(ctx);
-#endif /* HARDWARE_IIC */
-
-    __exit_bus(iic);
-    return status;
+    return iic->pf_unlock(iic->bus_context);
 }
 
-static cst816t_status_t __write_register(bsp_cst816t_driver_t *touch,
-                                         uint8_t reg, const uint8_t *data, uint16_t size)
+static cst816t_status_t send_byte_and_wait_ack(
+    const cst816t_iic_driver_interface_t *iic, uint8_t data)
 {
-    const cst816t_iic_driver_interface_t *iic = touch->p_iic_driver_instance;
-    cst816t_status_t status = CST816T_OK;
+    cst816t_status_t status;
 
-    __enter_bus(iic);
+    status = iic->pf_iic_send_byte(iic->bus_context, data);
 
-#ifdef HARDWARE_IIC
-    status = iic->pf_iic_write(iic->bus_context, CST816T_I2C_ADDRESS,
-                               reg, data, size, CST816T_IO_TIMEOUT_MS);
-#else
-    void *ctx = iic->bus_context;
+    if (status != CST816T_OK) return status;
 
-    (void)iic->pf_iic_start(ctx);
-    (void)iic->pf_iic_send_byte(ctx, (uint8_t)(CST816T_I2C_ADDRESS << 1));
-    if (iic->pf_iic_wait_ack(ctx) != CST816T_OK) {
-        status = CST816T_ERROR;
-        goto stop;
-    }
-
-    (void)iic->pf_iic_send_byte(ctx, reg);
-    if (iic->pf_iic_wait_ack(ctx) != CST816T_OK) {
-        status = CST816T_ERROR;
-        goto stop;
-    }
-
-    for (uint16_t i = 0; i < size; i++) {
-        (void)iic->pf_iic_send_byte(ctx, data[i]);
-        if (iic->pf_iic_wait_ack(ctx) != CST816T_OK) {
-            status = CST816T_ERROR;
-            break;
-        }
-    }
-
-stop:
-    (void)iic->pf_iic_stop(ctx);
-#endif /* HARDWARE_IIC */
-
-    __exit_bus(iic);
-    
-    return status;
+    return iic->pf_iic_wait_ack(iic->bus_context);
 }
 
-/* ---------- 驱动核心函数 ---------- */
+static cst816t_status_t read_register(bsp_cst816t_driver_t *touch,
+                                      uint8_t reg, uint8_t *data,
+                                      uint16_t size)
+{
+    const cst816t_iic_driver_interface_t *iic;
+    cst816t_status_t status;
+
+    if (touch == NULL || data == NULL || size == 0U)
+        return CST816T_ERROR_PARAM;
+
+    iic = touch->p_iic_driver_instance;
+    status = lock_i2c(iic);
+
+    if (status != CST816T_OK) return status;
+
+    status = iic->pf_iic_start(iic->bus_context);
+
+    if (status == CST816T_OK)
+        status = send_byte_and_wait_ack(
+            iic, (uint8_t)(CST816T_I2C_ADDRESS << 1U));
+
+    if (status == CST816T_OK)
+        status = send_byte_and_wait_ack(iic, reg);
+
+    if (status == CST816T_OK)
+        status = iic->pf_iic_start(iic->bus_context);
+
+    if (status == CST816T_OK)
+        status = send_byte_and_wait_ack(
+            iic, (uint8_t)((CST816T_I2C_ADDRESS << 1U) | 0x01U));
+
+    for (uint16_t index = 0U; status == CST816T_OK && index < size; index++)
+    {
+        status = iic->pf_iic_receive_byte(iic->bus_context, &data[index]);
+        if (status != CST816T_OK) break;
+        status = index + 1U == size
+               ? iic->pf_iic_send_no_ack(iic->bus_context)
+               : iic->pf_iic_send_ack(iic->bus_context);
+    }
+
+    status = first_error(status, iic->pf_iic_stop(iic->bus_context));
+    return first_error(status, unlock_i2c(iic));
+}
+
+static cst816t_status_t write_register(bsp_cst816t_driver_t *touch,
+                                       uint8_t reg, const uint8_t *data,
+                                       uint16_t size)
+{
+    const cst816t_iic_driver_interface_t *iic;
+    cst816t_status_t status;
+
+    if (touch == NULL || data == NULL || size == 0U)
+        return CST816T_ERROR_PARAM;
+
+    iic = touch->p_iic_driver_instance;
+    status = lock_i2c(iic);
+
+    if (status != CST816T_OK) return status;
+
+    status = iic->pf_iic_start(iic->bus_context);
+    if (status == CST816T_OK)
+        status = send_byte_and_wait_ack(
+            iic, (uint8_t)(CST816T_I2C_ADDRESS << 1U));
+
+    if (status == CST816T_OK)
+        status = send_byte_and_wait_ack(iic, reg);
+
+    for (uint16_t index = 0U; status == CST816T_OK && index < size; index++)
+        status = send_byte_and_wait_ack(iic, data[index]);
+
+    status = first_error(status, iic->pf_iic_stop(iic->bus_context));
+    return first_error(status, unlock_i2c(iic));
+}
+
 static cst816t_status_t cst816t_init(bsp_cst816t_driver_t *touch)
 {
-    uint8_t chip_id;
+    cst816t_status_t status;
 
-    /* 参数校验（含 yield 实例检查，与 AHT21 一致） */
     if (touch == NULL || touch->p_iic_driver_instance == NULL ||
         touch->p_yield_instance == NULL || touch->p_control_instance == NULL ||
         touch->p_iic_driver_instance->pf_iic_init == NULL ||
-        touch->p_control_instance->pf_set_reset == NULL ||
         touch->p_yield_instance->pf_rtos_yield == NULL ||
-        touch->width == 0U || touch->height == 0U) {
-        return CST816T_ERROR_PARAM;
-    }
+        touch->p_control_instance->pf_set_reset == NULL ||
+        touch->width == 0U || touch->height == 0U)
 
-    (void)touch->p_iic_driver_instance->pf_iic_init(
+        return CST816T_ERROR_PARAM;
+
+    touch->initialized = false;
+    status = touch->p_iic_driver_instance->pf_iic_init(
         touch->p_iic_driver_instance->bus_context);
 
-    /* 硬件复位：直接复用 yield 做延时，无需额外 delay 接口 */
-    touch->p_control_instance->pf_set_reset(touch->p_control_instance->context, false);
-    touch->p_yield_instance->pf_rtos_yield(5U);   // 保持低电平 5ms
-    
-    touch->p_control_instance->pf_set_reset(touch->p_control_instance->context, true);
-    touch->p_yield_instance->pf_rtos_yield(100U); // 复位后等待 100ms
+    if (status != CST816T_OK) return status;
 
-    /* 读 Chip ID 验证通信 */
-    if (__read_register(touch, CST816T_REG_CHIP_ID, &chip_id, 1U) != CST816T_OK) {
-        return CST816T_ERROR;
-    }
+    touch->p_control_instance->pf_set_reset(
+        touch->p_control_instance->context, false);
+    touch->p_yield_instance->pf_rtos_yield(CST816T_RESET_LOW_MS);
+    touch->p_control_instance->pf_set_reset(
+        touch->p_control_instance->context, true);
+    touch->p_yield_instance->pf_rtos_yield(CST816T_RESET_RECOVERY_MS);
+
+    status = read_register(touch, CST816T_REG_CHIP_ID, &touch->chip_id, 1U);
+
+    if (status != CST816T_OK) return status;
+
+    status = read_register(touch, CST816T_REG_VERSION,
+                           &touch->firmware_version, 1U);
+    if (status != CST816T_OK) return status;
 
     touch->initialized = true;
 
@@ -164,33 +171,36 @@ static cst816t_status_t cst816t_read_point(bsp_cst816t_driver_t *touch,
                                            cst816t_point_t *point)
 {
     uint8_t data[6];
+    cst816t_status_t status;
 
-    if (touch == NULL || point == NULL || !touch->initialized) {
+    if (touch == NULL || point == NULL || !touch->initialized)
         return CST816T_ERROR_PARAM;
-    }
 
-    /* 若提供了中断检测函数，则检查中断引脚 */
+    *point = (cst816t_point_t){0};
+
     if (touch->p_control_instance->pf_is_interrupt_asserted != NULL &&
-        !touch->p_control_instance->pf_is_interrupt_asserted(touch->p_control_instance->context)) {
+        !touch->p_control_instance->pf_is_interrupt_asserted(
+            touch->p_control_instance->context))
         return CST816T_NO_TOUCH;
-    }
 
-    if (__read_register(touch, CST816T_REG_GESTURE_ID, data, sizeof(data)) != CST816T_OK) {
-        return CST816T_ERROR;
-    }
+    status = read_register(touch, CST816T_REG_GESTURE_ID,
+                           data, (uint16_t)sizeof(data));
+    if (status != CST816T_OK) return status;
 
     point->gesture = data[0];
     point->fingers = data[1];
 
-    if (point->fingers == 0U) {
-        return CST816T_NO_TOUCH;
-    }
+    if (point->fingers == 0U) return CST816T_NO_TOUCH;
 
-    point->x = (uint16_t)(((data[2] & 0x0FU) << 8) | data[3]);
-    point->y = (uint16_t)(((data[4] & 0x0FU) << 8) | data[5]);
-    point->event = (uint8_t)((data[2] >> 6) & 0x03U);
+    if (point->fingers > CST816T_MAX_POINTS) return CST816T_ERROR;
 
-    if (point->x >= touch->width || point->y >= touch->height) {
+    point->x = (uint16_t)(((data[2] & 0x0FU) << 8U) | data[3]);
+    point->y = (uint16_t)(((data[4] & 0x0FU) << 8U) | data[5]);
+    point->event = (uint8_t)((data[2] >> 6U) & 0x03U);
+
+    if (point->x >= touch->width || point->y >= touch->height)
+    {
+        *point = (cst816t_point_t){0};
         return CST816T_ERROR;
     }
 
@@ -199,79 +209,79 @@ static cst816t_status_t cst816t_read_point(bsp_cst816t_driver_t *touch,
 
 static cst816t_status_t cst816t_sleep(bsp_cst816t_driver_t *touch)
 {
-    const uint8_t sleep_cmd = 0x03U;
+    const uint8_t sleep_command = 0x03U;
+    cst816t_status_t status;
 
-    if (touch == NULL || !touch->initialized) {
-        return CST816T_ERROR_PARAM;
-    }
+    if (touch == NULL || !touch->initialized) return CST816T_ERROR_PARAM;
 
-    if (__write_register(touch, CST816T_REG_SLEEP, &sleep_cmd, 1U) != CST816T_OK) {
-        return CST816T_ERROR;
-    }
+    status = write_register(touch, CST816T_REG_SLEEP, &sleep_command, 1U);
+
+    if (status != CST816T_OK) return status;
 
     touch->initialized = false;
+    return CST816T_OK;
+}
 
+static cst816t_status_t cst816t_get_info(
+    const bsp_cst816t_driver_t *touch, touch_info_t *info)
+{
+    if (touch == NULL || info == NULL || touch->width == 0U ||
+        touch->height == 0U)
+        return CST816T_ERROR_PARAM;
+
+    *info = (touch_info_t){
+        .width = touch->width,
+        .height = touch->height,
+        .max_points = CST816T_MAX_POINTS,
+    };
     return CST816T_OK;
 }
 
 static cst816t_status_t cst816t_wakeup(bsp_cst816t_driver_t *touch)
 {
-    if (touch == NULL) {
-        return CST816T_ERROR_PARAM;
-    }
+    if (touch == NULL) return CST816T_ERROR_PARAM;
 
     return cst816t_init(touch);
 }
 
-/* ---------- 实例化函数（参数列表对齐 AHT21，仅增加 control 和尺寸） ---------- */
-cst816t_status_t cst816t_inst(
-    bsp_cst816t_driver_t * const p_cst816t_instance,
-    const cst816t_iic_driver_interface_t * const p_iic_driver_instance,
-    const cst816t_timebase_interface_t * const p_timebase_instance,
-    const cst816t_yield_interface_t * const p_yield_instance,
-    const cst816t_control_interface_t * const p_control,
-    uint16_t width,
-    uint16_t height)
+static bool i2c_interface_is_valid(
+    const cst816t_iic_driver_interface_t *iic)
 {
-    if (p_cst816t_instance == NULL || p_iic_driver_instance == NULL ||
-        p_yield_instance == NULL || p_control == NULL ||
-        width == 0U || height == 0U) {
+    if (iic == NULL || iic->pf_iic_init == NULL ||
+        ((iic->pf_lock == NULL) != (iic->pf_unlock == NULL)))
+        return false;
+
+    return iic->pf_iic_start != NULL && iic->pf_iic_stop != NULL &&
+           iic->pf_iic_wait_ack != NULL && iic->pf_iic_send_ack != NULL &&
+           iic->pf_iic_send_no_ack != NULL &&
+           iic->pf_iic_send_byte != NULL &&
+           iic->pf_iic_receive_byte != NULL;
+}
+
+cst816t_status_t cst816t_inst(
+    bsp_cst816t_driver_t *touch,
+    const cst816t_iic_driver_interface_t *iic,
+    const cst816t_yield_interface_t *yield,
+    const cst816t_control_interface_t *control)
+{
+    if (touch == NULL || !i2c_interface_is_valid(iic) || yield == NULL ||
+        yield->pf_rtos_yield == NULL || control == NULL ||
+        control->pf_set_reset == NULL)
         return CST816T_ERROR_PARAM;
-    }
 
-    /* 根据 I2C 模式校验必要函数指针 */
-#ifdef HARDWARE_IIC
-    if (p_iic_driver_instance->pf_iic_init == NULL ||
-        p_iic_driver_instance->pf_iic_write == NULL ||
-        p_iic_driver_instance->pf_iic_read == NULL) {
-        return CST816T_ERROR_PARAM;
-    }
-#else
-    if (p_iic_driver_instance->pf_iic_init == NULL ||
-        p_iic_driver_instance->pf_iic_start == NULL ||
-        p_iic_driver_instance->pf_iic_stop == NULL ||
-        p_iic_driver_instance->pf_iic_send_byte == NULL ||
-        p_iic_driver_instance->pf_iic_wait_ack == NULL ||
-        p_iic_driver_instance->pf_iic_receive_byte == NULL ||
-        p_iic_driver_instance->pf_iic_send_ack == NULL ||
-        p_iic_driver_instance->pf_iic_send_no_ack == NULL) {
-        return CST816T_ERROR_PARAM;
-    }
-#endif
+    touch->p_iic_driver_instance = iic;
+    touch->p_yield_instance = yield;
+    touch->p_control_instance = control;
+    touch->width = CST816T_COORD_WIDTH;
+    touch->height = CST816T_COORD_HEIGHT;
+    touch->chip_id = 0U;
+    touch->firmware_version = 0U;
+    touch->initialized = false;
+    touch->pf_init = cst816t_init;
+    touch->pf_read_point = cst816t_read_point;
+    touch->pf_get_info = cst816t_get_info;
+    touch->pf_sleep = cst816t_sleep;
+    touch->pf_wakeup = cst816t_wakeup;
 
-    p_cst816t_instance->p_iic_driver_instance = p_iic_driver_instance;
-    p_cst816t_instance->p_timebase_instance   = p_timebase_instance;
-    p_cst816t_instance->p_yield_instance      = p_yield_instance;
-    p_cst816t_instance->p_control_instance    = p_control;
-    p_cst816t_instance->width                 = width;
-    p_cst816t_instance->height                = height;
-    p_cst816t_instance->initialized           = false;
-
-    /* 绑定函数指针（与 AHT21 风格完全一致） */
-    p_cst816t_instance->pf_init        = (cst816t_status_t (*)(void * const))cst816t_init;
-    p_cst816t_instance->pf_read_point  = (cst816t_status_t (*)(void * const, cst816t_point_t *))cst816t_read_point;
-    p_cst816t_instance->pf_sleep       = (cst816t_status_t (*)(void * const))cst816t_sleep;
-    p_cst816t_instance->pf_wakeup      = (cst816t_status_t (*)(void * const))cst816t_wakeup;
-
-    return cst816t_init(p_cst816t_instance);
+    return cst816t_init(touch);
 }

@@ -2,8 +2,21 @@
 
 #include <stddef.h>
 
+/* Private compatibility names keep the protocol implementation readable. */
+typedef temp_humi_status_t aht21_status_t;
+typedef temp_humi_iic_interface_t aht21_iic_driver_interface_t;
+typedef temp_humi_yield_interface_t aht21_yield_interface_t;
+typedef bsp_temp_humi_driver_t bsp_aht21_driver_t;
+
+#define AHT21_OK             TEMP_HUMI_OK
+#define AHT21_ERROR          TEMP_HUMI_ERROR
+#define AHT21_ERRORTIMEOUT   TEMP_HUMI_ERROR_TIMEOUT
+#define AHT21_ERRORRESOURCE  TEMP_HUMI_ERROR_RESOURCE
+#define AHT21_ERRORPARAMETER TEMP_HUMI_ERROR_PARAMETER
+
 #define AHT21_NOT_INITED 0
 #define AHT21_INITED     1
+#define AHT21_IO_TIMEOUT_MS     100U
 #define AHT21_CRC8_POLYNOMIAL 0x31U
 #define AHT21_CRC8_INITIAL    0xFFU
 
@@ -27,28 +40,30 @@ static uint8_t __crc8(const uint8_t *data, uint8_t length)
 	return crc;
 }
 
-static void __enter_bus(aht21_iic_driver_interface_t *iic)
+static aht21_status_t __first_error(aht21_status_t current,
+									 aht21_status_t candidate)
 {
-#ifndef HARDWARE_IIC
-	if (iic->pf_critical_enter != NULL)
-	{
-		(void)iic->pf_critical_enter();
-	}
-#else
-	(void)iic;
-#endif /* HARDWARE_IIC */
+	return current == AHT21_OK ? candidate : current;
 }
 
-static void __exit_bus(aht21_iic_driver_interface_t *iic)
+static aht21_status_t __lock_bus(aht21_iic_driver_interface_t *iic)
 {
-#ifndef HARDWARE_IIC
-	if (iic->pf_critical_exit != NULL)
+	if (iic->pf_lock == NULL)
 	{
-		(void)iic->pf_critical_exit();
+		return AHT21_OK;
 	}
-#else
-	(void)iic;
-#endif /* HARDWARE_IIC */
+
+	return iic->pf_lock(iic->bus_context, AHT21_IO_TIMEOUT_MS);
+}
+
+static aht21_status_t __unlock_bus(aht21_iic_driver_interface_t *iic)
+{
+	if (iic->pf_unlock == NULL)
+	{
+		return AHT21_OK;
+	}
+
+	return iic->pf_unlock(iic->bus_context);
 }
 
 static aht21_status_t __send_command(bsp_aht21_driver_t *instance,
@@ -58,38 +73,40 @@ static aht21_status_t __send_command(bsp_aht21_driver_t *instance,
 {
 	aht21_iic_driver_interface_t *iic = instance->p_iic_driver_instance;
 	uint8_t bytes[3] = { command, parameter_1, parameter_2 };
+	aht21_status_t status;
 
-#ifdef HARDWARE_IIC
-	return iic->pf_iic_write(iic->bus_context, AHT21_REG_I2C_ADDRESS,
-							 bytes, sizeof(bytes));
-#else
+	status = __lock_bus(iic);
+	if (status != AHT21_OK)
+	{
+		return status;
+	}
+
 	void *context = iic->bus_context;
 	uint8_t index;
-	aht21_status_t status = AHT21_OK;
 
-	__enter_bus(iic);
-	(void)iic->pf_iic_start(context);
-	(void)iic->pf_iic_send_byte(context, (uint8_t)(AHT21_REG_I2C_ADDRESS << 1));
-
-	if (iic->pf_iic_wait_ack(context) != AHT21_OK)
+	status = iic->pf_iic_start(context);
+	if (status == AHT21_OK)
 	{
-		status = AHT21_ERROR;
+		status = iic->pf_iic_send_byte(
+			context, (uint8_t)(AHT21_REG_I2C_ADDRESS << 1));
+	}
+
+	if (status == AHT21_OK)
+	{
+		status = iic->pf_iic_wait_ack(context);
 	}
 
 	for (index = 0U; index < 3U && status == AHT21_OK; index++)
 	{
-		(void)iic->pf_iic_send_byte(context, bytes[index]);
-		if (iic->pf_iic_wait_ack(context) != AHT21_OK)
+		status = iic->pf_iic_send_byte(context, bytes[index]);
+		if (status == AHT21_OK)
 		{
-			status = AHT21_ERROR;
+			status = iic->pf_iic_wait_ack(context);
 		}
 	}
-    
-	(void)iic->pf_iic_stop(context);
-	__exit_bus(iic);
 
-	return status;
-#endif /* HARDWARE_IIC */
+	status = __first_error(status, iic->pf_iic_stop(context));
+	return __first_error(status, __unlock_bus(iic));
 }
 
 static aht21_status_t __read_bytes(bsp_aht21_driver_t *instance,
@@ -97,42 +114,50 @@ static aht21_status_t __read_bytes(bsp_aht21_driver_t *instance,
 										uint8_t length)
 {
 	aht21_iic_driver_interface_t *iic = instance->p_iic_driver_instance;
+	aht21_status_t status;
 
-#ifdef HARDWARE_IIC
-	return iic->pf_iic_read(iic->bus_context, AHT21_REG_I2C_ADDRESS,
-							data, length);
-#else
+	status = __lock_bus(iic);
+	if (status != AHT21_OK)
+	{
+		return status;
+	}
+
 	void *context = iic->bus_context;
 	uint8_t index;
-	aht21_status_t status = AHT21_OK;
 
-	__enter_bus(iic);
-	(void)iic->pf_iic_start(context);
-	(void)iic->pf_iic_send_byte(context, (uint8_t)((AHT21_REG_I2C_ADDRESS << 1) | 1U));
-
-	if (iic->pf_iic_wait_ack(context) != AHT21_OK)
+	status = iic->pf_iic_start(context);
+	if (status == AHT21_OK)
 	{
-		status = AHT21_ERROR;
+		status = iic->pf_iic_send_byte(
+			context,
+			(uint8_t)((AHT21_REG_I2C_ADDRESS << 1) | 1U));
+	}
+
+	if (status == AHT21_OK)
+	{
+		status = iic->pf_iic_wait_ack(context);
 	}
 
 	for (index = 0U; index < length && status == AHT21_OK; index++)
 	{
-		(void)iic->pf_iic_receive_byte(context, &data[index]);
+		status = iic->pf_iic_receive_byte(context, &data[index]);
+		if (status != AHT21_OK)
+		{
+			break;
+		}
+
 		if (index + 1U < length)
 		{
-			(void)iic->pf_iic_send_ack(context);
+			status = iic->pf_iic_send_ack(context);
 		}
 		else
 		{
-			(void)iic->pf_iic_send_no_ack(context);
+			status = iic->pf_iic_send_no_ack(context);
 		}
 	}
 
-	(void)iic->pf_iic_stop(context);
-	__exit_bus(iic);
-
-	return status;
-#endif /* HARDWARE_IIC */
+	status = __first_error(status, iic->pf_iic_stop(context));
+	return __first_error(status, __unlock_bus(iic));
 }
 
 static aht21_status_t __read_status(bsp_aht21_driver_t *instance, uint8_t *status)
@@ -153,20 +178,21 @@ static aht21_status_t aht21_init(bsp_aht21_driver_t *instance)
 
 	iic = instance->p_iic_driver_instance;
 
-	if (iic->pf_iic_init == NULL
-#ifndef HARDWARE_IIC
-		|| iic->pf_iic_start == NULL ||
+	if (iic->pf_iic_init == NULL ||
+		((iic->pf_lock == NULL) != (iic->pf_unlock == NULL)) ||
+		iic->pf_iic_start == NULL ||
 		iic->pf_iic_stop == NULL || iic->pf_iic_send_byte == NULL ||
 		iic->pf_iic_wait_ack == NULL || iic->pf_iic_receive_byte == NULL ||
 		iic->pf_iic_send_ack == NULL || iic->pf_iic_send_no_ack == NULL)
-#else
-		|| iic->pf_iic_write == NULL || iic->pf_iic_read == NULL)
-#endif /* HARDWARE_IIC */
 	{
 		return AHT21_ERRORRESOURCE;
 	}
 
-	(void)iic->pf_iic_init(iic->bus_context);
+	if (iic->pf_iic_init(iic->bus_context) != AHT21_OK)
+	{
+		return AHT21_ERRORRESOURCE;
+	}
+
 	instance->p_yield_instance->pf_rtos_yield(AHT21_POWER_ON_WAIT_MS);
 
 	if (__read_status(instance, &status) != AHT21_OK)
@@ -265,8 +291,7 @@ static aht21_status_t aht21_wakeup(bsp_aht21_driver_t *instance)
 
 aht21_status_t aht21_inst(bsp_aht21_driver_t *instance,
 						  aht21_iic_driver_interface_t *iic,
-						  aht21_yield_interface_t *yield,
-						  aht21_timebase_interface_t *timebase)
+						  aht21_yield_interface_t *yield)
 {
 	if (instance == NULL || iic == NULL || yield == NULL ||
 		yield->pf_rtos_yield == NULL)
@@ -282,18 +307,12 @@ aht21_status_t aht21_inst(bsp_aht21_driver_t *instance,
 	instance->is_inited = AHT21_NOT_INITED;
 	instance->p_iic_driver_instance = iic;
 	instance->p_yield_instance = yield;
-	instance->p_timebase_instance = timebase;
-	instance->pf_inst = (aht21_status_t (*)(void * const,
-											aht21_iic_driver_interface_t * const,
-											aht21_yield_interface_t * const,
-											aht21_timebase_interface_t * const))aht21_inst;
-	instance->pf_init = (aht21_status_t (*)(void * const))aht21_init;
-	instance->pf_deinit = (aht21_status_t (*)(void * const))aht21_deinit;
-	instance->pf_read_id = (aht21_status_t (*)(void * const))aht21_read_id;
-	instance->pf_read_temp_humi = (aht21_status_t (*)(void * const, float * const,
-													   float * const))aht21_read_temp_humi;
-	instance->pf_sleep = (aht21_status_t (*)(void * const))aht21_sleep;
-	instance->pf_wakeup = (aht21_status_t (*)(void * const))aht21_wakeup;
+	instance->i2c_address = AHT21_REG_I2C_ADDRESS;
+	instance->pf_init = aht21_init;
+	instance->pf_deinit = aht21_deinit;
+	instance->pf_read_temp_humi = aht21_read_temp_humi;
+	instance->pf_sleep = aht21_sleep;
+	instance->pf_wakeup = aht21_wakeup;
 
 	return aht21_init(instance);
 }

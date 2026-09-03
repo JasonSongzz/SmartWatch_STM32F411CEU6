@@ -1,5 +1,17 @@
 #include "bsp_st7789t3_driver.h"
 
+typedef display_status_t st7789t3_status_t;
+typedef display_spi_interface_t st7789t3_spi_driver_interface_t;
+typedef display_control_interface_t st7789t3_control_interface_t;
+typedef display_delay_interface_t st7789t3_delay_interface_t;
+typedef bsp_display_driver_t bsp_st7789t3_t;
+
+#define ST7789T3_OK             DISPLAY_OK
+#define ST7789T3_ERROR          DISPLAY_ERROR
+#define ST7789T3_ERROR_PARAM    DISPLAY_ERROR_PARAMETER
+#define ST7789T3_ERROR_RESOURCE DISPLAY_ERROR_RESOURCE
+#define ST7789T3_ERROR_TIMEOUT  DISPLAY_ERROR_TIMEOUT
+
 #define ST7789T3_IO_TIMEOUT_MS (1000U)
 
 static st7789t3_status_t __lock_spi(
@@ -57,11 +69,11 @@ static st7789t3_status_t st7789t3_init(bsp_st7789t3_t *display)
         display->delay->pf_delay_ms == NULL)
         return ST7789T3_ERROR_PARAM;
 
-    display->width = 240U;
-    display->height = 280U;
-    display->x_offset = 0U;
-    display->y_offset = 0U;
-    display->madctl = 0x00U;
+    display->width = ST7789T3_WIDTH;
+    display->height = ST7789T3_HEIGHT;
+    display->x_offset = ST7789T3_X_OFFSET;
+    display->y_offset = ST7789T3_Y_OFFSET;
+    display->madctl = ST7789T3_MADCTL;
     display->control->pf_set_cs(display->control->context, true);
     if (display->control->pf_set_backlight != NULL)
         display->control->pf_set_backlight(display->control->context, false);
@@ -161,7 +173,7 @@ static st7789t3_status_t st7789t3_write_pixels(bsp_st7789t3_t *display,
 
 static st7789t3_status_t st7789t3_fill(bsp_st7789t3_t *display, uint16_t color)
 {
-    uint8_t line[240U * 2U];
+    uint8_t line[ST7789T3_WIDTH * 2U];
     size_t index;
 
     if (display == NULL || !display->initialized) return ST7789T3_ERROR_PARAM;
@@ -172,14 +184,34 @@ static st7789t3_status_t st7789t3_fill(bsp_st7789t3_t *display, uint16_t color)
         line[index + 1U] = (uint8_t)color;
     }
 
-    if (st7789t3_set_window(display, 0U, 0U, 239U, 279U) != ST7789T3_OK)
+    if (st7789t3_set_window(display, 0U, 0U,
+                            display->width - 1U,
+                            display->height - 1U) != ST7789T3_OK)
         return ST7789T3_ERROR;
 
-    for (index = 0U; index < 280U; index++)
+    for (index = 0U; index < display->height; index++)
     {
         if (st7789t3_write_pixels(display, line, sizeof(line)) != ST7789T3_OK)
             return ST7789T3_ERROR;
     }
+    return ST7789T3_OK;
+}
+
+static st7789t3_status_t st7789t3_get_info(
+    const bsp_st7789t3_t *display, display_info_t *info)
+{
+    if (display == NULL || info == NULL || display->width == 0U ||
+        display->height == 0U)
+        return ST7789T3_ERROR_PARAM;
+
+    *info = (display_info_t){
+        .width = display->width,
+        .height = display->height,
+        .x_offset = display->x_offset,
+        .y_offset = display->y_offset,
+        .bits_per_pixel = ST7789T3_BITS_PER_PIXEL,
+        .requires_byte_swap = ST7789T3_REQUIRES_BYTE_SWAP,
+    };
     return ST7789T3_OK;
 }
 
@@ -219,6 +251,7 @@ st7789t3_status_t st7789t3_inst(bsp_st7789t3_t *display,
     display->pf_set_window = st7789t3_set_window;
     display->pf_write_pixels = st7789t3_write_pixels;
     display->pf_fill = st7789t3_fill;
+    display->pf_get_info = st7789t3_get_info;
     display->pf_sleep = st7789t3_sleep;
     display->pf_wakeup = st7789t3_wakeup;
 

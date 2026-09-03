@@ -7,8 +7,10 @@
 #define OSAL_CHECK_APINAME(str) \
     OSAL_CHECK_STRING(str, OSAL_NAME_MAX_LENGTH, OSAL_ERR_NAME_TOO_LONG)
 
+#if (configUSE_IDLE_HOOK == 1)
 static osal_idle_hook_t s_idle_hook;
 static void *s_idle_hook_argument;
+#endif
 
 static UBaseType_t osal_priority_to_native(osal_priority_t priority)
 {

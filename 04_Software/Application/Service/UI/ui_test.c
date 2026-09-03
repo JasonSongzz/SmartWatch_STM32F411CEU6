@@ -26,7 +26,7 @@ void ui_test_create(void)
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 28);
 
     status = lv_label_create(screen);
-    lv_label_set_text(status, "ST7789T3 + LVGL");
+    lv_label_set_text(status, "LVGL UI Ready");
     lv_obj_set_style_text_color(status, lv_color_hex(0xB9D6F2), 0);
     lv_obj_align(status, LV_ALIGN_CENTER, 0, -32);
 

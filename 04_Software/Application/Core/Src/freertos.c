@@ -27,6 +27,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "drv_adapter_port_sensors.h"
+#include "drv_adapter_port_flash.h"
 
 /* USER CODE END Includes */
 
@@ -79,6 +81,8 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
+  (void)drv_adapter_port_sensors_register_defaults();
+  (void)drv_adapter_port_flash_register(FLASH_DEV_EXTERNAL);
 
   /* USER CODE END Init */
 

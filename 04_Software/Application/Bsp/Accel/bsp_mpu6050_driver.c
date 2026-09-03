@@ -2,60 +2,76 @@
 
 #include <stddef.h>
 
+typedef accel_status_t mpu6050_status_t;
+typedef accel_iic_interface_t mpu6050_iic_driver_interface_t;
+typedef accel_yield_interface_t mpu6050_yield_interface_t;
+typedef accel_raw_data_t mpu6050_raw_accel_t;
+typedef accel_data_t mpu6050_accel_t;
+typedef bsp_accel_driver_t bsp_mpu6050_driver_t;
+
+#define MPU6050_OK             ACCEL_OK
+#define MPU6050_ERROR          ACCEL_ERROR
+#define MPU6050_ERRORTIMEOUT   ACCEL_ERROR_TIMEOUT
+#define MPU6050_ERRORRESOURCE  ACCEL_ERROR_RESOURCE
+#define MPU6050_ERRORPARAMETER ACCEL_ERROR_PARAMETER
+#define MPU6050_ERRORID        ACCEL_ERROR_ID
+
 #define MPU6050_NOT_INITED 0
 #define MPU6050_INITED     1
+#define MPU6050_IO_TIMEOUT_MS 100U
 
-static void __enter_bus(mpu6050_iic_driver_interface_t *iic)
+static mpu6050_status_t __first_error(mpu6050_status_t current,
+                                      mpu6050_status_t candidate)
 {
-#ifndef HARDWARE_IIC
-    if (iic->pf_critical_enter != NULL) (void)iic->pf_critical_enter();
-#else
-    (void)iic;
-#endif
+    return current == MPU6050_OK ? candidate : current;
 }
 
-static void __exit_bus(mpu6050_iic_driver_interface_t *iic)
+static mpu6050_status_t __lock_bus(mpu6050_iic_driver_interface_t *iic)
 {
-#ifndef HARDWARE_IIC
-    if (iic->pf_critical_exit != NULL) (void)iic->pf_critical_exit();
-#else
-    (void)iic;
-#endif
+    if (iic->pf_lock == NULL) return MPU6050_OK;
+
+    return iic->pf_lock(iic->bus_context, MPU6050_IO_TIMEOUT_MS);
+}
+
+static mpu6050_status_t __unlock_bus(mpu6050_iic_driver_interface_t *iic)
+{
+    if (iic->pf_unlock == NULL) return MPU6050_OK;
+
+    return iic->pf_unlock(iic->bus_context);
+}
+
+static mpu6050_status_t __send_byte_and_wait_ack(
+    mpu6050_iic_driver_interface_t *iic, uint8_t data)
+{
+    mpu6050_status_t status;
+
+    status = iic->pf_iic_send_byte(iic->bus_context, data);
+    if (status != MPU6050_OK) return status;
+
+    return iic->pf_iic_wait_ack(iic->bus_context);
 }
 
 static mpu6050_status_t __write_register(bsp_mpu6050_driver_t *instance,
                                           uint8_t reg, uint8_t value)
 {
     mpu6050_iic_driver_interface_t *iic = instance->p_iic_driver_instance;
-#ifdef HARDWARE_IIC
-    return iic->pf_iic_write(iic->bus_context, MPU6050_I2C_ADDRESS, reg,
-                             &value, 1U);
-#else
+    mpu6050_status_t status;
+
+    status = __lock_bus(iic);
+    if (status != MPU6050_OK) return status;
+
     void *context = iic->bus_context;
-    mpu6050_status_t status = MPU6050_OK;
-    __enter_bus(iic);
-    (void)iic->pf_iic_start(context);
-    (void)iic->pf_iic_send_byte(context, (uint8_t)(MPU6050_I2C_ADDRESS << 1));
-
-    if (iic->pf_iic_wait_ack(context) != MPU6050_OK) status = MPU6050_ERROR;
-
+    status = iic->pf_iic_start(context);
     if (status == MPU6050_OK)
-    {
-        (void)iic->pf_iic_send_byte(context, reg);
-        if (iic->pf_iic_wait_ack(context) != MPU6050_OK) status = MPU6050_ERROR;
-    }
-
+        status = __send_byte_and_wait_ack(
+            iic, (uint8_t)(MPU6050_I2C_ADDRESS << 1U));
     if (status == MPU6050_OK)
-    {
-        (void)iic->pf_iic_send_byte(context, value);
-        if (iic->pf_iic_wait_ack(context) != MPU6050_OK) status = MPU6050_ERROR;
-    }
-    
-    (void)iic->pf_iic_stop(context);
-    __exit_bus(iic);
+        status = __send_byte_and_wait_ack(iic, reg);
+    if (status == MPU6050_OK)
+        status = __send_byte_and_wait_ack(iic, value);
 
-    return status; 
-#endif
+    status = __first_error(status, iic->pf_iic_stop(context));
+    return __first_error(status, __unlock_bus(iic));
 }
 
 static mpu6050_status_t __read_registers(bsp_mpu6050_driver_t *instance,
@@ -63,44 +79,36 @@ static mpu6050_status_t __read_registers(bsp_mpu6050_driver_t *instance,
                                           uint8_t length)
 {
     mpu6050_iic_driver_interface_t *iic = instance->p_iic_driver_instance;
-#ifdef HARDWARE_IIC
-    return iic->pf_iic_read(iic->bus_context, MPU6050_I2C_ADDRESS, reg,
-                            data, length);
-#else
+    mpu6050_status_t status;
+
+    status = __lock_bus(iic);
+    if (status != MPU6050_OK) return status;
+
     void *context = iic->bus_context;
     uint8_t index;
-    mpu6050_status_t status = MPU6050_OK;
-    __enter_bus(iic);
-    (void)iic->pf_iic_start(context);
-    (void)iic->pf_iic_send_byte(context, (uint8_t)(MPU6050_I2C_ADDRESS << 1));
-
-    if (iic->pf_iic_wait_ack(context) != MPU6050_OK) status = MPU6050_ERROR;
-
+    status = iic->pf_iic_start(context);
     if (status == MPU6050_OK)
-    {
-        (void)iic->pf_iic_send_byte(context, reg);
-        if (iic->pf_iic_wait_ack(context) != MPU6050_OK) status = MPU6050_ERROR;
-    }
-
+        status = __send_byte_and_wait_ack(
+            iic, (uint8_t)(MPU6050_I2C_ADDRESS << 1U));
     if (status == MPU6050_OK)
-    {
-        (void)iic->pf_iic_start(context);
-        (void)iic->pf_iic_send_byte(context, (uint8_t)((MPU6050_I2C_ADDRESS << 1) | 1U));
-        if (iic->pf_iic_wait_ack(context) != MPU6050_OK) status = MPU6050_ERROR;
-    }
+        status = __send_byte_and_wait_ack(iic, reg);
+    if (status == MPU6050_OK)
+        status = iic->pf_iic_start(context);
+    if (status == MPU6050_OK)
+        status = __send_byte_and_wait_ack(
+            iic, (uint8_t)((MPU6050_I2C_ADDRESS << 1U) | 1U));
 
     for (index = 0U; index < length && status == MPU6050_OK; index++)
     {
-        (void)iic->pf_iic_receive_byte(context, &data[index]);
-        if (index + 1U < length) (void)iic->pf_iic_send_ack(context);
-        else (void)iic->pf_iic_send_no_ack(context);
+        status = iic->pf_iic_receive_byte(context, &data[index]);
+        if (status != MPU6050_OK) break;
+        status = index + 1U < length
+               ? iic->pf_iic_send_ack(context)
+               : iic->pf_iic_send_no_ack(context);
     }
 
-    (void)iic->pf_iic_stop(context);
-    __exit_bus(iic);
-
-    return status;
-#endif
+    status = __first_error(status, iic->pf_iic_stop(context));
+    return __first_error(status, __unlock_bus(iic));
 }
 
 static mpu6050_status_t mpu6050_read_id(bsp_mpu6050_driver_t *instance, uint8_t *id)
@@ -121,20 +129,17 @@ static mpu6050_status_t mpu6050_init(bsp_mpu6050_driver_t *instance)
 
     iic = instance->p_iic_driver_instance;
 
-    if (iic->pf_iic_init == NULL)
+    if (iic->pf_iic_init == NULL ||
+        ((iic->pf_lock == NULL) != (iic->pf_unlock == NULL)))
         return MPU6050_ERRORRESOURCE;
 
-#ifndef HARDWARE_IIC
     if (iic->pf_iic_start == NULL || iic->pf_iic_stop == NULL ||
         iic->pf_iic_wait_ack == NULL || iic->pf_iic_send_byte == NULL ||
         iic->pf_iic_receive_byte == NULL || iic->pf_iic_send_ack == NULL ||
         iic->pf_iic_send_no_ack == NULL)
         return MPU6050_ERRORRESOURCE;
-#else
-    if (iic->pf_iic_write == NULL || iic->pf_iic_read == NULL)
+    if (iic->pf_iic_init(iic->bus_context) != MPU6050_OK)
         return MPU6050_ERRORRESOURCE;
-#endif
-    (void)iic->pf_iic_init(iic->bus_context);
 
     if (__write_register(instance, MPU6050_REG_PWR_MGMT_1,
                          MPU6050_PWR1_DEVICE_RESET) != MPU6050_OK)
@@ -238,13 +243,13 @@ mpu6050_status_t mpu6050_inst(bsp_mpu6050_driver_t *instance,
     instance->is_inited = MPU6050_NOT_INITED;
     instance->accel_config = MPU6050_ACCEL_FS_2G;
     instance->accel_sensitivity = MPU6050_ACCEL_SENSITIVITY_2G;
-    instance->pf_init = (mpu6050_status_t (*)(void * const))mpu6050_init;
-    instance->pf_deinit = (mpu6050_status_t (*)(void * const))mpu6050_deinit;
-    instance->pf_read_id = (mpu6050_status_t (*)(void * const, uint8_t * const))mpu6050_read_id;
-    instance->pf_read_raw_accel = (mpu6050_status_t (*)(void * const, mpu6050_raw_accel_t * const))mpu6050_read_raw_accel;
-    instance->pf_read_accel = (mpu6050_status_t (*)(void * const, mpu6050_accel_t * const))mpu6050_read_accel;
-    instance->pf_sleep = (mpu6050_status_t (*)(void * const))mpu6050_sleep;
-    instance->pf_wakeup = (mpu6050_status_t (*)(void * const))mpu6050_wakeup;
+    instance->pf_init = mpu6050_init;
+    instance->pf_deinit = mpu6050_deinit;
+    instance->pf_read_id = mpu6050_read_id;
+    instance->pf_read_raw_accel = mpu6050_read_raw_accel;
+    instance->pf_read_accel = mpu6050_read_accel;
+    instance->pf_sleep = mpu6050_sleep;
+    instance->pf_wakeup = mpu6050_wakeup;
     
     return mpu6050_init(instance);
 }
