@@ -27,8 +27,13 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "drv_adapter_port_sensors.h"
+#include "drv_adapter_port_accel.h"
+#include "drv_adapter_port_display.h"
 #include "drv_adapter_port_flash.h"
+#include "drv_adapter_port_temphumi.h"
+#include "drv_adapter_port_touch.h"
+#include "accel_service.h"
+#include "temp_humi_service.h"
 
 /* USER CODE END Includes */
 
@@ -81,7 +86,10 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
-  (void)drv_adapter_port_sensors_register_defaults();
+  (void)drv_adapter_port_display_register(0U, NULL);
+  (void)drv_adapter_port_temphumi_register(0U, NULL);
+  (void)drv_adapter_port_accel_register(0U, NULL);
+  (void)drv_adapter_port_touch_register(0U, NULL);
   (void)drv_adapter_port_flash_register(FLASH_DEV_EXTERNAL);
 
   /* USER CODE END Init */
@@ -128,6 +136,8 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
   (void)storage_service_init();
+  (void)accel_service_start(NULL);
+  (void)temp_humi_service_start(NULL);
   /* Infinite loop */
   for(;;)
   {

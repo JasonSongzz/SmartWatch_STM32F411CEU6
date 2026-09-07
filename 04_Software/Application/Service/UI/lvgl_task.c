@@ -1,19 +1,24 @@
 #include "lvgl_task.h"
 
 #include "lvgl.h"
-#include "lvgl_port_display.h"
+#include "lvgl_display.h"
+#include "lvgl_touch.h"
 #include "ui_test.h"
 #include "osal.h"
 #include "iwdg.h"
 
 void lvgl_task_entry(void *argument)
 {
+    lv_display_t *display;
+
     (void)argument;
     (void)HAL_IWDG_Refresh(&hiwdg);
     lv_init();
     lv_tick_set_cb(HAL_GetTick);
-    if (lvgl_port_display_init() != NULL)
+    display = lvgl_display_init();
+    if (display != NULL)
     {
+        (void)lvgl_touch_init(display);
         ui_test_create();
     }
     for (;;)

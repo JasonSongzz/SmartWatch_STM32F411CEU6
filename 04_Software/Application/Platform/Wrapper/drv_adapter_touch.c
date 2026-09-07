@@ -8,6 +8,8 @@ bool drv_adapter_touch_reg(uint32_t index, const touch_drv_t *dev)
 {
     if (index >= TOUCH_DEV_MAX || dev == NULL || dev->init == NULL ||
         dev->read == NULL || dev->get_info == NULL ||
+        dev->set_processing_config == NULL ||
+        dev->get_processing_config == NULL ||
         dev->sleep == NULL || dev->wakeup == NULL)
         return false;
 
@@ -23,6 +25,24 @@ bool drv_adapter_touch_get_info(uint32_t index,
     return index < TOUCH_DEV_MAX && info != NULL &&
            s_dev[index].get_info != NULL &&
            s_dev[index].get_info(&s_dev[index], info);
+}
+
+bool drv_adapter_touch_set_processing_config(
+    uint32_t index,
+    const drv_adapter_touch_processing_config_t *config)
+{
+    return index < TOUCH_DEV_MAX && config != NULL &&
+           s_dev[index].set_processing_config != NULL &&
+           s_dev[index].set_processing_config(&s_dev[index], config);
+}
+
+bool drv_adapter_touch_get_processing_config(
+    uint32_t index,
+    drv_adapter_touch_processing_config_t *config)
+{
+    return index < TOUCH_DEV_MAX && config != NULL &&
+           s_dev[index].get_processing_config != NULL &&
+           s_dev[index].get_processing_config(&s_dev[index], config);
 }
 
 bool drv_adapter_touch_init(uint32_t index)

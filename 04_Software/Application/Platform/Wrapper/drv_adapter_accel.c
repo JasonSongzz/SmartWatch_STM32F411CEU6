@@ -8,6 +8,8 @@ bool drv_adapter_accel_reg(uint32_t index, const accel_drv_t *dev)
 {
     if (index >= ACCEL_DEV_MAX || dev == NULL || dev->init == NULL ||
         dev->refresh == NULL || dev->read_cached == NULL ||
+        dev->read_snapshot == NULL || dev->set_calibration == NULL ||
+        dev->get_calibration == NULL || dev->set_filter == NULL ||
         dev->sleep == NULL || dev->wakeup == NULL)
     {
         return false;
@@ -54,4 +56,36 @@ bool drv_adapter_accel_sample(uint32_t index, float *x, float *y, float *z)
 {
     return drv_adapter_accel_refresh(index) &&
            drv_adapter_accel_read(index, x, y, z);
+}
+
+bool drv_adapter_accel_read_snapshot(uint32_t index,
+                                     accel_snapshot_t *snapshot)
+{
+    return index < ACCEL_DEV_MAX && snapshot != NULL &&
+           s_dev[index].read_snapshot != NULL &&
+           s_dev[index].read_snapshot(&s_dev[index], snapshot);
+}
+
+bool drv_adapter_accel_set_calibration(
+    uint32_t index, const accel_calibration_t *calibration)
+{
+    return index < ACCEL_DEV_MAX && calibration != NULL &&
+           s_dev[index].set_calibration != NULL &&
+           s_dev[index].set_calibration(&s_dev[index], calibration);
+}
+
+bool drv_adapter_accel_get_calibration(
+    uint32_t index, accel_calibration_t *calibration)
+{
+    return index < ACCEL_DEV_MAX && calibration != NULL &&
+           s_dev[index].get_calibration != NULL &&
+           s_dev[index].get_calibration(&s_dev[index], calibration);
+}
+
+bool drv_adapter_accel_set_filter(
+    uint32_t index, const accel_filter_config_t *config)
+{
+    return index < ACCEL_DEV_MAX && config != NULL &&
+           s_dev[index].set_filter != NULL &&
+           s_dev[index].set_filter(&s_dev[index], config);
 }

@@ -2,252 +2,276 @@
 
 #include <stddef.h>
 
-typedef accel_status_t mpu6050_status_t;
-typedef accel_iic_interface_t mpu6050_iic_driver_interface_t;
-typedef accel_yield_interface_t mpu6050_yield_interface_t;
-typedef accel_raw_data_t mpu6050_raw_accel_t;
-typedef accel_data_t mpu6050_accel_t;
-typedef bsp_accel_driver_t bsp_mpu6050_driver_t;
-
-#define MPU6050_OK             ACCEL_OK
-#define MPU6050_ERROR          ACCEL_ERROR
-#define MPU6050_ERRORTIMEOUT   ACCEL_ERROR_TIMEOUT
-#define MPU6050_ERRORRESOURCE  ACCEL_ERROR_RESOURCE
-#define MPU6050_ERRORPARAMETER ACCEL_ERROR_PARAMETER
-#define MPU6050_ERRORID        ACCEL_ERROR_ID
-
 #define MPU6050_NOT_INITED 0
 #define MPU6050_INITED     1
 #define MPU6050_IO_TIMEOUT_MS 100U
 
-static mpu6050_status_t __first_error(mpu6050_status_t current,
-                                      mpu6050_status_t candidate)
+static accel_status_t mpu6050_first_error(accel_status_t current,
+                                      accel_status_t candidate)
 {
-    return current == MPU6050_OK ? candidate : current;
+    return current == ACCEL_OK ? candidate : current;
 }
 
-static mpu6050_status_t __lock_bus(mpu6050_iic_driver_interface_t *iic)
+static accel_status_t mpu6050_lock_bus(accel_iic_interface_t *iic)
 {
-    if (iic->pf_lock == NULL) return MPU6050_OK;
+    if (iic->pf_lock == NULL) return ACCEL_OK;
 
     return iic->pf_lock(iic->bus_context, MPU6050_IO_TIMEOUT_MS);
 }
 
-static mpu6050_status_t __unlock_bus(mpu6050_iic_driver_interface_t *iic)
+static accel_status_t mpu6050_unlock_bus(accel_iic_interface_t *iic)
 {
-    if (iic->pf_unlock == NULL) return MPU6050_OK;
+    if (iic->pf_unlock == NULL) return ACCEL_OK;
 
     return iic->pf_unlock(iic->bus_context);
 }
 
-static mpu6050_status_t __send_byte_and_wait_ack(
-    mpu6050_iic_driver_interface_t *iic, uint8_t data)
+static accel_status_t mpu6050_send_byte_and_wait_ack(
+    accel_iic_interface_t *iic, uint8_t data)
 {
-    mpu6050_status_t status;
+    accel_status_t status;
 
     status = iic->pf_iic_send_byte(iic->bus_context, data);
-    if (status != MPU6050_OK) return status;
+    if (status != ACCEL_OK) return status;
 
     return iic->pf_iic_wait_ack(iic->bus_context);
 }
 
-static mpu6050_status_t __write_register(bsp_mpu6050_driver_t *instance,
+static accel_status_t mpu6050_write_register(bsp_accel_driver_t *instance,
                                           uint8_t reg, uint8_t value)
 {
-    mpu6050_iic_driver_interface_t *iic = instance->p_iic_driver_instance;
-    mpu6050_status_t status;
+    accel_iic_interface_t *iic = instance->p_iic_driver_instance;
+    accel_status_t status;
 
-    status = __lock_bus(iic);
-    if (status != MPU6050_OK) return status;
+    status = mpu6050_lock_bus(iic);
+    if (status != ACCEL_OK) return status;
 
     void *context = iic->bus_context;
     status = iic->pf_iic_start(context);
-    if (status == MPU6050_OK)
-        status = __send_byte_and_wait_ack(
+    if (status == ACCEL_OK)
+        status = mpu6050_send_byte_and_wait_ack(
             iic, (uint8_t)(MPU6050_I2C_ADDRESS << 1U));
-    if (status == MPU6050_OK)
-        status = __send_byte_and_wait_ack(iic, reg);
-    if (status == MPU6050_OK)
-        status = __send_byte_and_wait_ack(iic, value);
+    if (status == ACCEL_OK)
+        status = mpu6050_send_byte_and_wait_ack(iic, reg);
+    if (status == ACCEL_OK)
+        status = mpu6050_send_byte_and_wait_ack(iic, value);
 
-    status = __first_error(status, iic->pf_iic_stop(context));
-    return __first_error(status, __unlock_bus(iic));
+    status = mpu6050_first_error(status, iic->pf_iic_stop(context));
+    return mpu6050_first_error(status, mpu6050_unlock_bus(iic));
 }
 
-static mpu6050_status_t __read_registers(bsp_mpu6050_driver_t *instance,
+static accel_status_t mpu6050_read_registers(bsp_accel_driver_t *instance,
                                           uint8_t reg, uint8_t *data,
                                           uint8_t length)
 {
-    mpu6050_iic_driver_interface_t *iic = instance->p_iic_driver_instance;
-    mpu6050_status_t status;
+    accel_iic_interface_t *iic = instance->p_iic_driver_instance;
+    accel_status_t status;
 
-    status = __lock_bus(iic);
-    if (status != MPU6050_OK) return status;
+    status = mpu6050_lock_bus(iic);
+    if (status != ACCEL_OK) return status;
 
     void *context = iic->bus_context;
     uint8_t index;
     status = iic->pf_iic_start(context);
-    if (status == MPU6050_OK)
-        status = __send_byte_and_wait_ack(
+    if (status == ACCEL_OK)
+        status = mpu6050_send_byte_and_wait_ack(
             iic, (uint8_t)(MPU6050_I2C_ADDRESS << 1U));
-    if (status == MPU6050_OK)
-        status = __send_byte_and_wait_ack(iic, reg);
-    if (status == MPU6050_OK)
+    if (status == ACCEL_OK)
+        status = mpu6050_send_byte_and_wait_ack(iic, reg);
+    if (status == ACCEL_OK)
         status = iic->pf_iic_start(context);
-    if (status == MPU6050_OK)
-        status = __send_byte_and_wait_ack(
+    if (status == ACCEL_OK)
+        status = mpu6050_send_byte_and_wait_ack(
             iic, (uint8_t)((MPU6050_I2C_ADDRESS << 1U) | 1U));
 
-    for (index = 0U; index < length && status == MPU6050_OK; index++)
+    for (index = 0U; index < length && status == ACCEL_OK; index++)
     {
         status = iic->pf_iic_receive_byte(context, &data[index]);
-        if (status != MPU6050_OK) break;
+        if (status != ACCEL_OK) break;
         status = index + 1U < length
                ? iic->pf_iic_send_ack(context)
                : iic->pf_iic_send_no_ack(context);
     }
 
-    status = __first_error(status, iic->pf_iic_stop(context));
-    return __first_error(status, __unlock_bus(iic));
+    status = mpu6050_first_error(status, iic->pf_iic_stop(context));
+    return mpu6050_first_error(status, mpu6050_unlock_bus(iic));
 }
 
-static mpu6050_status_t mpu6050_read_id(bsp_mpu6050_driver_t *instance, uint8_t *id)
+static accel_status_t mpu6050_read_id(bsp_accel_driver_t *instance, uint8_t *id)
 {
     if (instance == NULL || instance->is_inited != MPU6050_INITED || id == NULL)
-        return MPU6050_ERRORPARAMETER;
-    return __read_registers(instance, MPU6050_REG_WHO_AM_I, id, 1U);
+        return ACCEL_ERROR_PARAMETER;
+    return mpu6050_read_registers(instance, MPU6050_REG_WHO_AM_I, id, 1U);
 }
 
-static mpu6050_status_t mpu6050_init(bsp_mpu6050_driver_t *instance)
+static accel_status_t mpu6050_init(bsp_accel_driver_t *instance)
 {
-    mpu6050_iic_driver_interface_t *iic;
+    accel_iic_interface_t *iic;
     uint8_t id;
 
     if (instance == NULL || instance->p_iic_driver_instance == NULL ||
         instance->p_yield_instance == NULL || instance->p_yield_instance->pf_rtos_yield == NULL)
-        return MPU6050_ERRORPARAMETER;
+        return ACCEL_ERROR_PARAMETER;
 
     iic = instance->p_iic_driver_instance;
 
     if (iic->pf_iic_init == NULL ||
         ((iic->pf_lock == NULL) != (iic->pf_unlock == NULL)))
-        return MPU6050_ERRORRESOURCE;
+        return ACCEL_ERROR_RESOURCE;
 
     if (iic->pf_iic_start == NULL || iic->pf_iic_stop == NULL ||
         iic->pf_iic_wait_ack == NULL || iic->pf_iic_send_byte == NULL ||
         iic->pf_iic_receive_byte == NULL || iic->pf_iic_send_ack == NULL ||
         iic->pf_iic_send_no_ack == NULL)
-        return MPU6050_ERRORRESOURCE;
-    if (iic->pf_iic_init(iic->bus_context) != MPU6050_OK)
-        return MPU6050_ERRORRESOURCE;
+        return ACCEL_ERROR_RESOURCE;
+    if (iic->pf_iic_init(iic->bus_context) != ACCEL_OK)
+        return ACCEL_ERROR_RESOURCE;
 
-    if (__write_register(instance, MPU6050_REG_PWR_MGMT_1,
-                         MPU6050_PWR1_DEVICE_RESET) != MPU6050_OK)
-        return MPU6050_ERROR;
+    if (mpu6050_write_register(instance, MPU6050_REG_PWR_MGMT_1,
+                         MPU6050_PWR1_DEVICE_RESET) != ACCEL_OK)
+        return ACCEL_ERROR;
 
     instance->p_yield_instance->pf_rtos_yield(MPU6050_RESET_WAIT_MS);
 
-    if (__write_register(instance, MPU6050_REG_PWR_MGMT_1,
-                         MPU6050_PWR1_CLKSEL_PLL_XGYRO) != MPU6050_OK ||
-        __write_register(instance, MPU6050_REG_CONFIG, 0x03U) != MPU6050_OK ||
-        __write_register(instance, MPU6050_REG_SMPLRT_DIV, 0x09U) != MPU6050_OK ||
-        __write_register(instance, MPU6050_REG_GYRO_CONFIG, 0x00U) != MPU6050_OK ||
-        __write_register(instance, MPU6050_REG_ACCEL_CONFIG,
-                         instance->accel_config) != MPU6050_OK)
-        return MPU6050_ERROR;
+    if (mpu6050_write_register(instance, MPU6050_REG_PWR_MGMT_1,
+                         MPU6050_PWR1_CLKSEL_PLL_XGYRO) != ACCEL_OK ||
+        mpu6050_write_register(instance, MPU6050_REG_CONFIG, 0x03U) != ACCEL_OK ||
+        mpu6050_write_register(instance, MPU6050_REG_SMPLRT_DIV, 0x09U) != ACCEL_OK ||
+        mpu6050_write_register(instance, MPU6050_REG_GYRO_CONFIG,
+                         instance->gyro_config) != ACCEL_OK ||
+        mpu6050_write_register(instance, MPU6050_REG_ACCEL_CONFIG,
+                         instance->accel_config) != ACCEL_OK)
+        return ACCEL_ERROR;
 
-    if (__read_registers(instance, MPU6050_REG_WHO_AM_I, &id, 1U) != MPU6050_OK ||
+    if (mpu6050_read_registers(instance, MPU6050_REG_WHO_AM_I, &id, 1U) != ACCEL_OK ||
         (id & MPU6050_WHO_AM_I_MASK) != (MPU6050_I2C_ADDRESS & MPU6050_WHO_AM_I_MASK))
-        return MPU6050_ERRORID;
+        return ACCEL_ERROR_ID;
 
     instance->is_inited = MPU6050_INITED;
 
-    return MPU6050_OK;
+    return ACCEL_OK;
 }
 
-static mpu6050_status_t mpu6050_deinit(bsp_mpu6050_driver_t *instance)
+static accel_status_t mpu6050_deinit(bsp_accel_driver_t *instance)
 {
     if (instance != NULL) instance->is_inited = MPU6050_NOT_INITED;
-    return MPU6050_OK;
+    return ACCEL_OK;
 }
 
-static mpu6050_status_t mpu6050_read_raw_accel(bsp_mpu6050_driver_t *instance,
-                                          mpu6050_raw_accel_t *accel)
+static accel_status_t mpu6050_read_raw_accel(bsp_accel_driver_t *instance,
+                                          accel_raw_data_t *accel)
 {
     uint8_t data[MPU6050_DATA_LENGTH];
 
     if (instance == NULL || instance->is_inited != MPU6050_INITED || accel == NULL)
-        return MPU6050_ERRORPARAMETER;
+        return ACCEL_ERROR_PARAMETER;
 
-    if (__read_registers(instance, MPU6050_REG_ACCEL_XOUT_H, data,
-                         MPU6050_DATA_LENGTH) != MPU6050_OK)
-        return MPU6050_ERROR;
+    if (mpu6050_read_registers(instance, MPU6050_REG_ACCEL_XOUT_H, data,
+                         MPU6050_DATA_LENGTH) != ACCEL_OK)
+        return ACCEL_ERROR;
 
     accel->x = (int16_t)(((uint16_t)data[0] << 8) | data[1]);
     accel->y = (int16_t)(((uint16_t)data[2] << 8) | data[3]);
     accel->z = (int16_t)(((uint16_t)data[4] << 8) | data[5]);
 
-    return MPU6050_OK;
+    return ACCEL_OK;
 }
 
-static mpu6050_status_t mpu6050_read_accel(bsp_mpu6050_driver_t *instance,
-                                      mpu6050_accel_t *accel)
+static accel_status_t mpu6050_read_accel(bsp_accel_driver_t *instance,
+                                      accel_data_t *accel)
 {
-    mpu6050_raw_accel_t raw;
+    accel_raw_data_t raw;
 
-    if (accel == NULL) return MPU6050_ERRORPARAMETER;
+    if (accel == NULL) return ACCEL_ERROR_PARAMETER;
 
-    if (mpu6050_read_raw_accel(instance, &raw) != MPU6050_OK) return MPU6050_ERROR;
+    if (mpu6050_read_raw_accel(instance, &raw) != ACCEL_OK) return ACCEL_ERROR;
 
     accel->x = (float)raw.x / instance->accel_sensitivity;
     accel->y = (float)raw.y / instance->accel_sensitivity;
     accel->z = (float)raw.z / instance->accel_sensitivity;
 
-    return MPU6050_OK;
+    return ACCEL_OK;
 }
 
-static mpu6050_status_t mpu6050_sleep(bsp_mpu6050_driver_t *instance)
+static accel_status_t mpu6050_read_imu(bsp_accel_driver_t *instance,
+                                         accel_imu_data_t *imu)
+{
+    uint8_t data[MPU6050_IMU_FRAME_LENGTH];
+    accel_raw_imu_data_t raw;
+
+    if (instance == NULL || instance->is_inited != MPU6050_INITED ||
+        imu == NULL || instance->accel_sensitivity <= 0.0f ||
+        instance->gyro_sensitivity <= 0.0f)
+        return ACCEL_ERROR_PARAMETER;
+
+    if (mpu6050_read_registers(instance, MPU6050_REG_ACCEL_XOUT_H, data,
+                         MPU6050_IMU_FRAME_LENGTH) != ACCEL_OK)
+        return ACCEL_ERROR;
+
+    raw.accel.x = (int16_t)(((uint16_t)data[0] << 8) | data[1]);
+    raw.accel.y = (int16_t)(((uint16_t)data[2] << 8) | data[3]);
+    raw.accel.z = (int16_t)(((uint16_t)data[4] << 8) | data[5]);
+    raw.temperature = (int16_t)(((uint16_t)data[6] << 8) | data[7]);
+    raw.gyro.x = (int16_t)(((uint16_t)data[8] << 8) | data[9]);
+    raw.gyro.y = (int16_t)(((uint16_t)data[10] << 8) | data[11]);
+    raw.gyro.z = (int16_t)(((uint16_t)data[12] << 8) | data[13]);
+
+    imu->accel_g.x = (float)raw.accel.x / instance->accel_sensitivity;
+    imu->accel_g.y = (float)raw.accel.y / instance->accel_sensitivity;
+    imu->accel_g.z = (float)raw.accel.z / instance->accel_sensitivity;
+    imu->gyro_dps.x = (float)raw.gyro.x / instance->gyro_sensitivity;
+    imu->gyro_dps.y = (float)raw.gyro.y / instance->gyro_sensitivity;
+    imu->gyro_dps.z = (float)raw.gyro.z / instance->gyro_sensitivity;
+    imu->temperature_c = (float)raw.temperature / 340.0f + 36.53f;
+
+    return ACCEL_OK;
+}
+
+static accel_status_t mpu6050_sleep(bsp_accel_driver_t *instance)
 {
     if (instance == NULL || instance->is_inited != MPU6050_INITED)
-        return MPU6050_ERRORRESOURCE;
+        return ACCEL_ERROR_RESOURCE;
 
-    if (__write_register(instance, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_SLEEP) != MPU6050_OK)
-        return MPU6050_ERROR;
+    if (mpu6050_write_register(instance, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_SLEEP) != ACCEL_OK)
+        return ACCEL_ERROR;
 
     instance->is_inited = MPU6050_NOT_INITED;
 
-    return MPU6050_OK;
+    return ACCEL_OK;
 }
 
-static mpu6050_status_t mpu6050_wakeup(bsp_mpu6050_driver_t *instance)
+static accel_status_t mpu6050_wakeup(bsp_accel_driver_t *instance)
 {
     if (instance == NULL || instance->p_yield_instance == NULL)
-        return MPU6050_ERRORPARAMETER;
+        return ACCEL_ERROR_PARAMETER;
 
     instance->is_inited = MPU6050_NOT_INITED;
 
     return mpu6050_init(instance);
 }
 
-mpu6050_status_t mpu6050_inst(bsp_mpu6050_driver_t *instance,
-                              mpu6050_iic_driver_interface_t *iic,
-                              mpu6050_yield_interface_t *yield)
+accel_status_t mpu6050_inst(bsp_accel_driver_t *instance,
+                              accel_iic_interface_t *iic,
+                              accel_yield_interface_t *yield)
 {
     if (instance == NULL || iic == NULL || yield == NULL || yield->pf_rtos_yield == NULL)
-        return MPU6050_ERRORPARAMETER;
+        return ACCEL_ERROR_PARAMETER;
 
-    if (instance->is_inited == MPU6050_INITED) return MPU6050_ERRORRESOURCE;
+    if (instance->is_inited == MPU6050_INITED) return ACCEL_ERROR_RESOURCE;
 
     instance->p_iic_driver_instance = iic;
     instance->p_yield_instance = yield;
     instance->is_inited = MPU6050_NOT_INITED;
-    instance->accel_config = MPU6050_ACCEL_FS_2G;
-    instance->accel_sensitivity = MPU6050_ACCEL_SENSITIVITY_2G;
+    instance->accel_config = MPU6050_ACCEL_FS_4G;
+    instance->gyro_config = MPU6050_GYRO_FS_500DPS;
+    instance->accel_sensitivity = MPU6050_ACCEL_SENSITIVITY_4G;
+    instance->gyro_sensitivity = MPU6050_GYRO_SENSITIVITY_500DPS;
     instance->pf_init = mpu6050_init;
     instance->pf_deinit = mpu6050_deinit;
     instance->pf_read_id = mpu6050_read_id;
     instance->pf_read_raw_accel = mpu6050_read_raw_accel;
     instance->pf_read_accel = mpu6050_read_accel;
+    instance->pf_read_imu = mpu6050_read_imu;
     instance->pf_sleep = mpu6050_sleep;
     instance->pf_wakeup = mpu6050_wakeup;
     

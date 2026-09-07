@@ -21,37 +21,44 @@
 #define FLASH_PORT_CS_CLOCK_ENABLE()      __HAL_RCC_GPIOB_CLK_ENABLE()
 #define FLASH_PORT_TRANSFER_TIMEOUT_MS    1000U
 
+/** @brief 双备份配置值存入 FlashDB blob 前附加的完整性头。 */
 typedef struct {
-    uint32_t magic;
-    uint32_t format_version;
-    uint32_t sequence;
-    uint32_t payload_size;
-    uint32_t crc32;
+    uint32_t magic; /**< 固定格式标识 FLASH_CONFIG_RECORD_MAGIC。 */
+    uint32_t format_version; /**< 记录格式版本，用于未来迁移。 */
+    uint32_t sequence; /**< 单调递增版本号，用于主备择新。 */
+    uint32_t payload_size; /**< 头部之后的用户数据长度，字节。 */
+    uint32_t crc32; /**< 用户数据 CRC32，不包含本头部。 */
 } flash_config_header_t;
 
+/** @brief 保证配置记录按 uint32_t 对齐的共享序列化缓冲区。 */
 typedef union {
-    uint32_t alignment;
+    uint32_t alignment; /**< 强制 union 具备至少 4 字节对齐。 */
     uint8_t bytes[sizeof(flash_config_header_t) +
-                  FLASH_CONFIG_MAX_DATA_SIZE];
+                  FLASH_CONFIG_MAX_DATA_SIZE]; /**< 头部和最大配置载荷。 */
 } flash_config_buffer_t;
 
+/** @brief 单个 FlashDB 实例使用的 OSAL 锁上下文。 */
 typedef struct {
-    osal_mutex_handle_t mutex;
+    osal_mutex_handle_t mutex; /**< 由 FlashDB lock/unlock 回调使用。 */
 } flash_db_context_t;
 
+/** @brief 在 FlashDB 锁内复制单条日志快照时使用的临时状态。 */
 typedef struct {
-    flash_log_visitor_t visitor;
-    void *argument;
-    size_t limit;
-    size_t count;
-} flash_log_iter_context_t;
+    uint8_t *buffer; /**< 调用方独占的日志载荷缓冲区。 */
+    size_t size; /**< 已复制的日志载荷长度。 */
+    fdb_time_t timestamp; /**< 已复制记录的时间戳。 */
+    fdb_time_t upper_exclusive; /**< 后续查找必须早于此时间戳。 */
+    bool has_upper; /**< upper_exclusive 是否有效。 */
+    bool found; /**< 本轮是否成功复制了一条记录。 */
+} flash_log_snapshot_context_t;
 
+/** @brief 板载 SPI Flash 总线、片选和互斥锁上下文。 */
 typedef struct {
-    SPI_HandleTypeDef *spi;
-    GPIO_TypeDef *cs_port;
-    uint16_t cs_pin;
-    osal_mutex_handle_t mutex;
-    bool mutex_ready;
+    SPI_HandleTypeDef *spi; /**< CubeMX 生成的 SPI 句柄。 */
+    GPIO_TypeDef *cs_port; /**< Flash 片选 GPIO 端口。 */
+    uint16_t cs_pin; /**< Flash 片选 GPIO 引脚掩码。 */
+    osal_mutex_handle_t mutex; /**< 完整 SFUD SPI 事务互斥锁。 */
+    bool mutex_ready; /**< mutex 是否已经创建成功。 */
 } flash_bus_context_t;
 
 static bool s_registered;
@@ -69,6 +76,7 @@ static flash_db_context_t s_config_backup_context;
 static flash_db_context_t s_log_context;
 static osal_mutex_handle_t s_config_api_mutex;
 static osal_mutex_handle_t s_log_api_mutex;
+static osal_mutex_handle_t s_log_visit_mutex;
 static flash_config_buffer_t s_config_buffer_main;
 static flash_config_buffer_t s_config_buffer_backup;
 static uint8_t s_log_read_buffer[FLASH_LOG_MAX_DATA_SIZE];
@@ -87,6 +95,7 @@ static spiflash_status_t flash_bus_write_read(void *context,
 static spiflash_status_t flash_bus_lock(void *context, uint32_t timeout_ms);
 static spiflash_status_t flash_bus_unlock(void *context);
 
+/** 注入 SPI Flash BSP/SFUD 的板级 SPI 接口表。 */
 static const spiflash_spi_driver_interface_t s_spi_interface = {
     .bus_context = &s_bus,
     .pf_spi_init = flash_bus_init,
@@ -95,10 +104,12 @@ static const spiflash_spi_driver_interface_t s_spi_interface = {
     .pf_unlock = flash_bus_unlock,
 };
 
+/** SFUD 忙轮询期间使用的 OSAL 延时适配。 */
 static const spiflash_yield_interface_t s_yield_interface = {
     .pf_rtos_yield = osal_task_delay_ms,
 };
 
+/** FAL 暴露的外部 Flash 设备；读写最终转发至 BSP/SFUD。 */
 struct fal_flash_dev g_fal_spi_flash = {
     .name = FAL_SPI_FLASH_DEV_NAME,
     .addr = 0U,
@@ -211,26 +222,26 @@ static fdb_err_t flash_config_write_record(
 
 static bool flash_log_iter_callback(fdb_tsl_t tsl, void *argument)
 {
-    flash_log_iter_context_t *context =
-        (flash_log_iter_context_t *)argument;
+    flash_log_snapshot_context_t *context =
+        (flash_log_snapshot_context_t *)argument;
     struct fdb_blob blob;
     size_t size;
 
-    if (tsl->status != FDB_TSL_WRITE) return false;
+    if (tsl->status != FDB_TSL_WRITE ||
+        (context->has_upper && tsl->time >= context->upper_exclusive))
+        return false;
 
-    fdb_tsl_to_blob(tsl, fdb_blob_make(&blob, s_log_read_buffer,
-                                       sizeof(s_log_read_buffer)));
-    if (blob.saved.len > sizeof(s_log_read_buffer)) return false;
+    fdb_tsl_to_blob(tsl, fdb_blob_make(&blob, context->buffer,
+                                       FLASH_LOG_MAX_DATA_SIZE));
+    if (blob.saved.len > FLASH_LOG_MAX_DATA_SIZE) return false;
 
     size = fdb_blob_read((fdb_db_t)&s_log_db, &blob);
     if (size != blob.saved.len) return false;
 
-    context->count++;
-    if (context->visitor(tsl->time, s_log_read_buffer, size,
-                         context->argument)) {
-        return true;
-    }
-    return context->count >= context->limit;
+    context->timestamp = tsl->time;
+    context->size = size;
+    context->found = true;
+    return true;
 }
 
 static bool flash_port_init(flash_drv_t *dev)
@@ -244,7 +255,8 @@ static bool flash_port_init(flash_drv_t *dev)
         !flash_mutex_ensure(&s_config_backup_context.mutex) ||
         !flash_mutex_ensure(&s_log_context.mutex) ||
         !flash_mutex_ensure(&s_config_api_mutex) ||
-        !flash_mutex_ensure(&s_log_api_mutex)) {
+        !flash_mutex_ensure(&s_log_api_mutex) ||
+        !flash_mutex_ensure(&s_log_visit_mutex)) {
         return false;
     }
 
@@ -559,17 +571,38 @@ static size_t flash_port_log_visit_latest(flash_drv_t *dev,
                                           flash_log_visitor_t visitor,
                                           void *argument)
 {
-    flash_log_iter_context_t context;
+    flash_log_snapshot_context_t context = {0};
+    size_t count = 0U;
 
     (void)dev;
     if (!s_flash_ready || visitor == NULL || max_entries == 0U) return 0U;
 
-    context.visitor = visitor;
-    context.argument = argument;
-    context.limit = max_entries;
-    context.count = 0U;
-    fdb_tsl_iter_reverse(&s_log_db, flash_log_iter_callback, &context);
-    return context.count;
+    if (osal_mutex_take(s_log_visit_mutex,
+                        OSAL_WAIT_FOREVER) != OSAL_SUCCESS)
+        return 0U;
+    context.buffer = s_log_read_buffer;
+
+    while (count < max_entries)
+    {
+        context.found = false;
+        if (osal_mutex_take(s_log_api_mutex,
+                            OSAL_WAIT_FOREVER) != OSAL_SUCCESS)
+            break;
+        fdb_tsl_iter_reverse(&s_log_db, flash_log_iter_callback, &context);
+        (void)osal_mutex_give(s_log_api_mutex);
+        if (!context.found) break;
+
+        context.upper_exclusive = context.timestamp;
+        context.has_upper = true;
+        ++count;
+        /* FlashDB and API locks are deliberately released before user code. */
+        if (visitor(context.timestamp, s_log_read_buffer,
+                    context.size, argument))
+            break;
+    }
+
+    (void)osal_mutex_give(s_log_visit_mutex);
+    return count;
 }
 
 static flash_status_t flash_port_log_clear(flash_drv_t *dev)

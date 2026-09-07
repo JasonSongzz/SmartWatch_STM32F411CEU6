@@ -2,20 +2,27 @@
 
 #include "bsp_display_handler.h"
 #include "osal.h"
+#include "spi.h"
 
 #define DISPLAY_IO_TIMEOUT_MS (1000U)
 
+#ifndef DISPLAY_SPI_HANDLE
+#define DISPLAY_SPI_HANDLE hspi1
+#endif
+
+/** @brief 单个显示设备的 Port 私有装配和运行上下文。 */
 typedef struct
 {
-    bool registered;
-    display_port_config_t config;
-    osal_mutex_handle_t mutex;
-    display_spi_interface_t spi_interface;
-    display_control_interface_t control_interface;
-    display_delay_interface_t delay_interface;
-    bsp_display_handler_t handler;
+    bool registered; /**< 是否已经占用对应 Wrapper 设备槽。 */
+    display_port_config_t config; /**< 注册时复制的 MCU 外设及引脚配置。 */
+    osal_mutex_handle_t mutex; /**< 完整 SPI 显示事务互斥锁。 */
+    display_spi_interface_t spi_interface; /**< 注入 BSP 的 SPI 适配表。 */
+    display_control_interface_t control_interface; /**< 注入 BSP 的 GPIO 适配表。 */
+    display_delay_interface_t delay_interface; /**< 注入 BSP 的 OSAL 延时适配表。 */
+    bsp_display_handler_t handler; /**< 当前显示 Handler 和具体驱动状态。 */
 } display_port_context_t;
 
+/** 每个 Wrapper 显示索引对应一个独立的 Port 上下文。 */
 static display_port_context_t s_port[DISPLAY_DEV_MAX];
 
 static void enable_gpio_clock(GPIO_TypeDef *gpio)
@@ -202,21 +209,14 @@ static bool display_port_init(display_drv_t *dev)
                                 &port->delay_interface) == DISPLAY_OK;
 }
 
-static bool display_port_set_window(display_drv_t *dev,
+static bool display_port_write_area(display_drv_t *dev,
                                     uint16_t x0, uint16_t y0,
-                                    uint16_t x1, uint16_t y1)
+                                    uint16_t x1, uint16_t y1,
+                                    const uint8_t *pixels, size_t size)
 {
     display_port_context_t *port = dev != NULL ? dev->user_data : NULL;
-    return port != NULL && display_handler_set_window(
-        &port->handler, x0, y0, x1, y1) == DISPLAY_OK;
-}
-
-static bool display_port_write_pixels(display_drv_t *dev,
-                                      const uint8_t *pixels, size_t size)
-{
-    display_port_context_t *port = dev != NULL ? dev->user_data : NULL;
-    return port != NULL && display_handler_write_pixels(
-        &port->handler, pixels, size) == DISPLAY_OK;
+    return port != NULL && display_handler_write_area(
+        &port->handler, x0, y0, x1, y1, pixels, size) == DISPLAY_OK;
 }
 
 static bool display_port_fill(display_drv_t *dev, uint16_t color)
@@ -266,24 +266,39 @@ bool drv_adapter_port_display_register(
 {
     display_port_context_t *port;
     display_drv_t driver;
+    const display_port_config_t *selected_config;
+    const display_port_config_t default_config = {
+        .spi = &DISPLAY_SPI_HANDLE,
+        .cs_port = DISPLAY_CS_PORT,
+        .cs_pin = DISPLAY_CS_PIN,
+        .dc_port = DISPLAY_DC_PORT,
+        .dc_pin = DISPLAY_DC_PIN,
+        .reset_port = DISPLAY_RESET_PORT,
+        .reset_pin = DISPLAY_RESET_PIN,
+        .bl_port = DISPLAY_BL_PORT,
+        .bl_pin = DISPLAY_BL_PIN,
+    };
 
-    if (index >= DISPLAY_DEV_MAX || config == NULL || config->spi == NULL ||
-        config->cs_port == NULL || config->cs_pin == 0U ||
-        config->dc_port == NULL || config->dc_pin == 0U ||
-        config->reset_port == NULL || config->reset_pin == 0U ||
-        s_port[index].registered)
+    if (index >= DISPLAY_DEV_MAX || s_port[index].registered)
+        return false;
+
+    selected_config = config != NULL ? config : &default_config;
+    if (selected_config->spi == NULL ||
+        selected_config->cs_port == NULL || selected_config->cs_pin == 0U ||
+        selected_config->dc_port == NULL || selected_config->dc_pin == 0U ||
+        selected_config->reset_port == NULL ||
+        selected_config->reset_pin == 0U)
         return false;
 
     port = &s_port[index];
-    port->config = *config;
+    port->config = *selected_config;
     port->mutex = NULL;
     port->handler.initialized = false;
     driver = (display_drv_t){
         .idx = index,
         .user_data = port,
         .init = display_port_init,
-        .set_window = display_port_set_window,
-        .write_pixels = display_port_write_pixels,
+        .write_area = display_port_write_area,
         .fill = display_port_fill,
         .get_info = display_port_get_info,
         .sleep = display_port_sleep,

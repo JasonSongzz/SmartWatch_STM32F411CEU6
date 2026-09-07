@@ -27,7 +27,7 @@ typedef struct {
     uint32_t erase_size;
 } storage_area_info_t;
 
-/* Returning true stops iteration. Data is callback-only; do not re-enter this service. */
+/* Data is callback-only; no DB/API lock is held. Do not recursively visit logs. */
 typedef bool (*storage_log_visitor_t)(storage_log_time_t timestamp,
                                       const void *data,
                                       size_t size,
