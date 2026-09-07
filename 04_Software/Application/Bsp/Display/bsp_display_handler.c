@@ -19,26 +19,16 @@ display_status_t display_handler_init(
     return status;
 }
 
-display_status_t display_handler_set_window(
+display_status_t display_handler_write_area(
     bsp_display_handler_t *handler, uint16_t x0, uint16_t y0,
-    uint16_t x1, uint16_t y1)
+    uint16_t x1, uint16_t y1, const uint8_t *pixels, size_t size)
 {
     if (handler == NULL || !handler->initialized ||
-        handler->driver.pf_set_window == NULL)
+        handler->driver.pf_write_area == NULL)
         return DISPLAY_ERROR_RESOURCE;
 
-    return handler->driver.pf_set_window(&handler->driver,
-                                         x0, y0, x1, y1);
-}
-
-display_status_t display_handler_write_pixels(
-    bsp_display_handler_t *handler, const uint8_t *pixels, size_t size)
-{
-    if (handler == NULL || !handler->initialized ||
-        handler->driver.pf_write_pixels == NULL)
-        return DISPLAY_ERROR_RESOURCE;
-
-    return handler->driver.pf_write_pixels(&handler->driver, pixels, size);
+    return handler->driver.pf_write_area(&handler->driver, x0, y0, x1, y1,
+                                         pixels, size);
 }
 
 display_status_t display_handler_fill(bsp_display_handler_t *handler,

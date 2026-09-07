@@ -55,6 +55,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Bsp/Touch/bsp_cst816t_driver.c
     Bsp/Touch/bsp_touch_handler.c
     Bsp/SPIFlash/bsp_spiflash_driver.c
+    Service/Sensor/accel_service.c
+    Service/Sensor/temp_humi_service.c
     Service/UI/ui_test.c
     Platform/Wrapper/drv_adapter_accel.c
     Platform/Wrapper/drv_adapter_temphumi.c
@@ -63,11 +65,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Platform/Wrapper/drv_adapter_flash.c
     Platform/Port/drv_adapter_port_accel.c
     Platform/Port/drv_adapter_port_temphumi.c
-    Platform/Port/drv_adapter_port_sensors.c
     Platform/Port/drv_adapter_port_display.c
     Platform/Port/drv_adapter_port_touch.c
     Platform/Port/drv_adapter_port_flash.c
-    Platform/Port/lvgl_port_display.c
+    Service/UI/lvgl_display.c
+    Service/UI/lvgl_touch.c
     Service/UI/lvgl_task.c
     Service/Storage/storage_service.c
     Middlewares/Third_Party/sfud/src/sfud.c
@@ -90,6 +92,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Bsp/Display
     Bsp/Touch
     Bsp/SPIFlash
+    Service/Sensor
     Service/UI
     Service/Storage
     Platform/Wrapper

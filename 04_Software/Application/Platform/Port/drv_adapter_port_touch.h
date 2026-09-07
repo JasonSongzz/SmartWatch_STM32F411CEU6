@@ -34,17 +34,24 @@
 #define TOUCH_INTERRUPT_PIN GPIO_PIN_11
 #endif
 
+/** @brief 触摸 Port 的软件 I2C、复位和中断装配参数。 */
 typedef struct
 {
-    void *iic_bus;
-    osal_mutex_handle_t bus_mutex;
-    GPIO_TypeDef *reset_port;
-    uint16_t reset_pin;
-    GPIO_TypeDef *interrupt_port;
-    uint16_t interrupt_pin;
-    bool interrupt_active_low;
+    void *iic_bus; /**< 可选的 iic_bus_t；NULL 时使用默认软件 I2C 引脚。 */
+    osal_mutex_handle_t bus_mutex; /**< 可选共享总线锁；NULL 时由 Port 创建。 */
+    GPIO_TypeDef *reset_port; /**< 触摸控制器复位 GPIO 端口。 */
+    uint16_t reset_pin; /**< 复位 GPIO 引脚掩码。 */
+    GPIO_TypeDef *interrupt_port; /**< 可选中断 GPIO 端口；NULL 表示不查询。 */
+    uint16_t interrupt_pin; /**< 可选中断 GPIO 引脚掩码。 */
+    bool interrupt_active_low; /**< true 表示低电平为中断有效。 */
 } touch_port_config_t;
 
+/**
+ * @brief 将板级触摸设备装配到 Touch Wrapper。
+ * @param index Wrapper 设备索引。
+ * @param config 板级配置；NULL 使用默认引脚并创建互斥锁。
+ * @return true 表示注册成功；硬件初始化延迟到 Wrapper init 调用。
+ */
 bool drv_adapter_port_touch_register(uint32_t index,
                                      const touch_port_config_t *config);
 

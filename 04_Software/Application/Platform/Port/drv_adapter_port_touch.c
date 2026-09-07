@@ -4,19 +4,29 @@
 #include "iic_hal.h"
 #include "osal.h"
 
+/**
+ * @brief 单个触摸设备的 Port 私有装配和运行上下文。
+ *
+ * bus_mutex 只保护一整次 I2C 事务；operation_mutex 串行化 Handler 的
+ * 滤波状态、配置修改和休眠/唤醒，获取顺序固定为 operation -> bus。
+ */
 typedef struct
 {
-    bool registered;
-    touch_port_config_t config;
-    iic_bus_t iic_bus;
-    osal_mutex_handle_t bus_mutex;
-    touch_iic_interface_t iic_interface;
-    touch_control_interface_t control_interface;
-    touch_yield_interface_t yield_interface;
-    bsp_touch_handler_t handler;
+    bool registered; /**< 是否已经占用对应 Wrapper 设备槽。 */
+    touch_port_config_t config; /**< 注册时复制的板级控制配置。 */
+    iic_bus_t iic_bus; /**< 注册时复制的软件 I2C 引脚描述。 */
+    osal_mutex_handle_t bus_mutex; /**< 完整 I2C 事务互斥锁。 */
+    osal_mutex_handle_t operation_mutex; /**< Handler 状态和设备操作互斥锁。 */
+    touch_iic_interface_t iic_interface; /**< 注入 BSP 的 I2C 适配表。 */
+    touch_control_interface_t control_interface; /**< 注入 BSP 的 GPIO 适配表。 */
+    touch_yield_interface_t yield_interface; /**< 注入 BSP 的 OSAL 延时适配表。 */
+    bsp_touch_handler_t handler; /**< 映射、滤波、状态机及具体驱动上下文。 */
 } touch_port_t;
 
+/** 每个 Wrapper 触摸索引对应一个独立的 Port 上下文。 */
 static touch_port_t s_port[TOUCH_DEV_MAX];
+
+#define TOUCH_OPERATION_TIMEOUT_MS (250U)
 
 static void enable_gpio_clock(GPIO_TypeDef *gpio)
 {
@@ -145,11 +155,20 @@ static bool touch_port_init(touch_drv_t *dev)
 {
     touch_port_t *port = dev != NULL ? (touch_port_t *)dev->user_data : NULL;
     GPIO_InitTypeDef gpio = {0};
+    bool initialized;
 
     if (port == NULL) return false;
 
     if (port->bus_mutex == NULL &&
         osal_mutex_create(&port->bus_mutex) != OSAL_SUCCESS)
+        return false;
+
+    if (port->operation_mutex == NULL &&
+        osal_mutex_create(&port->operation_mutex) != OSAL_SUCCESS)
+        return false;
+
+    if (osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
         return false;
 
     enable_gpio_clock(port->config.reset_port);
@@ -192,9 +211,11 @@ static bool touch_port_init(touch_drv_t *dev)
     };
     port->yield_interface.pf_rtos_yield = osal_task_delay_ms;
 
-    return touch_handler_init(&port->handler, &port->iic_interface,
-                              &port->control_interface,
-                              &port->yield_interface) == TOUCH_OK;
+    initialized = touch_handler_init(&port->handler, &port->iic_interface,
+                                     &port->control_interface,
+                                     &port->yield_interface) == TOUCH_OK;
+    if (osal_mutex_give(port->operation_mutex) != OSAL_SUCCESS) return false;
+    return initialized;
 }
 
 static drv_adapter_touch_status_t touch_port_read(
@@ -204,31 +225,49 @@ static drv_adapter_touch_status_t touch_port_read(
     touch_point_t raw_point;
     touch_status_t status;
 
-    if (port == NULL || point == NULL) return DRV_ADAPTER_TOUCH_ERROR;
+    if (port == NULL || point == NULL || port->operation_mutex == NULL ||
+        osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
+        return DRV_ADAPTER_TOUCH_ERROR;
 
-    status = touch_handler_read(&port->handler, &raw_point);
+    status = touch_handler_read(&port->handler, osal_time_get_ms(),
+                                &raw_point);
     if (status == TOUCH_NO_TOUCH)
     {
         *point = (drv_adapter_touch_point_t){0};
+        (void)osal_mutex_give(port->operation_mutex);
         return DRV_ADAPTER_TOUCH_NO_TOUCH;
     }
-    if (status != TOUCH_OK) return DRV_ADAPTER_TOUCH_ERROR;
+    if (status != TOUCH_OK)
+    {
+        (void)osal_mutex_give(port->operation_mutex);
+        return DRV_ADAPTER_TOUCH_ERROR;
+    }
 
     point->x = raw_point.x;
     point->y = raw_point.y;
     point->gesture = raw_point.gesture;
     point->event = raw_point.event;
     point->fingers = raw_point.fingers;
+    point->timestamp_ms = raw_point.timestamp_ms;
+    point->sequence = raw_point.sequence;
 
-    return DRV_ADAPTER_TOUCH_OK;
+    return osal_mutex_give(port->operation_mutex) == OSAL_SUCCESS
+         ? DRV_ADAPTER_TOUCH_OK : DRV_ADAPTER_TOUCH_ERROR;
 }
 
 static bool touch_port_sleep(touch_drv_t *dev)
 {
     touch_port_t *port = dev != NULL ? (touch_port_t *)dev->user_data : NULL;
+    bool slept;
 
-    return port != NULL &&
-           touch_handler_sleep(&port->handler) == TOUCH_OK;
+    if (port == NULL || port->operation_mutex == NULL ||
+        osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
+        return false;
+
+    slept = touch_handler_sleep(&port->handler) == TOUCH_OK;
+    return osal_mutex_give(port->operation_mutex) == OSAL_SUCCESS && slept;
 }
 
 static bool touch_port_get_info(touch_drv_t *dev,
@@ -236,25 +275,134 @@ static bool touch_port_get_info(touch_drv_t *dev,
 {
     touch_port_t *port = dev != NULL ? (touch_port_t *)dev->user_data : NULL;
     touch_info_t bsp_info;
+    bool succeeded;
 
-    if (port == NULL || info == NULL ||
-        touch_handler_get_info(&port->handler, &bsp_info) != TOUCH_OK)
+    if (port == NULL || info == NULL || port->operation_mutex == NULL ||
+        osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
         return false;
+
+    succeeded = touch_handler_get_info(&port->handler, &bsp_info) == TOUCH_OK;
+    if (!succeeded)
+    {
+        (void)osal_mutex_give(port->operation_mutex);
+        return false;
+    }
 
     *info = (drv_adapter_touch_info_t){
         .width = bsp_info.width,
         .height = bsp_info.height,
         .max_points = bsp_info.max_points,
     };
-    return true;
+    return osal_mutex_give(port->operation_mutex) == OSAL_SUCCESS;
+}
+
+static void touch_config_to_bsp(
+    const drv_adapter_touch_processing_config_t *source,
+    touch_processing_config_t *destination)
+{
+    *destination = (touch_processing_config_t){
+        .raw_x_min = source->raw_x_min,
+        .raw_x_max = source->raw_x_max,
+        .raw_y_min = source->raw_y_min,
+        .raw_y_max = source->raw_y_max,
+        .output_width = source->output_width,
+        .output_height = source->output_height,
+        .move_deadband_px = source->move_deadband_px,
+        .fast_move_threshold_px_per_s =
+            source->fast_move_threshold_px_per_s,
+        .jump_threshold_px = source->jump_threshold_px,
+        .jump_confirm_distance_px = source->jump_confirm_distance_px,
+        .slow_filter_alpha_q8 = source->slow_filter_alpha_q8,
+        .fast_filter_alpha_q8 = source->fast_filter_alpha_q8,
+        .press_debounce_samples = source->press_debounce_samples,
+        .release_debounce_samples = source->release_debounce_samples,
+        .swap_xy = source->swap_xy,
+        .invert_x = source->invert_x,
+        .invert_y = source->invert_y,
+        .median_filter_enabled = source->median_filter_enabled,
+    };
+}
+
+static void touch_config_from_bsp(
+    const touch_processing_config_t *source,
+    drv_adapter_touch_processing_config_t *destination)
+{
+    *destination = (drv_adapter_touch_processing_config_t){
+        .raw_x_min = source->raw_x_min,
+        .raw_x_max = source->raw_x_max,
+        .raw_y_min = source->raw_y_min,
+        .raw_y_max = source->raw_y_max,
+        .output_width = source->output_width,
+        .output_height = source->output_height,
+        .move_deadband_px = source->move_deadband_px,
+        .fast_move_threshold_px_per_s =
+            source->fast_move_threshold_px_per_s,
+        .jump_threshold_px = source->jump_threshold_px,
+        .jump_confirm_distance_px = source->jump_confirm_distance_px,
+        .slow_filter_alpha_q8 = source->slow_filter_alpha_q8,
+        .fast_filter_alpha_q8 = source->fast_filter_alpha_q8,
+        .press_debounce_samples = source->press_debounce_samples,
+        .release_debounce_samples = source->release_debounce_samples,
+        .swap_xy = source->swap_xy,
+        .invert_x = source->invert_x,
+        .invert_y = source->invert_y,
+        .median_filter_enabled = source->median_filter_enabled,
+    };
+}
+
+static bool touch_port_set_processing_config(
+    touch_drv_t *dev,
+    const drv_adapter_touch_processing_config_t *config)
+{
+    touch_port_t *port = dev != NULL ? (touch_port_t *)dev->user_data : NULL;
+    touch_processing_config_t bsp_config;
+    bool succeeded;
+
+    if (port == NULL || config == NULL || port->operation_mutex == NULL ||
+        osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
+        return false;
+
+    touch_config_to_bsp(config, &bsp_config);
+    succeeded = touch_handler_set_processing_config(&port->handler,
+                                                    &bsp_config) == TOUCH_OK;
+    return osal_mutex_give(port->operation_mutex) == OSAL_SUCCESS &&
+           succeeded;
+}
+
+static bool touch_port_get_processing_config(
+    touch_drv_t *dev,
+    drv_adapter_touch_processing_config_t *config)
+{
+    touch_port_t *port = dev != NULL ? (touch_port_t *)dev->user_data : NULL;
+    touch_processing_config_t bsp_config;
+    bool succeeded;
+
+    if (port == NULL || config == NULL || port->operation_mutex == NULL ||
+        osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
+        return false;
+
+    succeeded = touch_handler_get_processing_config(&port->handler,
+                                                    &bsp_config) == TOUCH_OK;
+    if (succeeded) touch_config_from_bsp(&bsp_config, config);
+    return osal_mutex_give(port->operation_mutex) == OSAL_SUCCESS &&
+           succeeded;
 }
 
 static bool touch_port_wakeup(touch_drv_t *dev)
 {
     touch_port_t *port = dev != NULL ? (touch_port_t *)dev->user_data : NULL;
+    bool awakened;
 
-    return port != NULL &&
-           touch_handler_wakeup(&port->handler) == TOUCH_OK;
+    if (port == NULL || port->operation_mutex == NULL ||
+        osal_mutex_take(port->operation_mutex,
+                        TOUCH_OPERATION_TIMEOUT_MS) != OSAL_SUCCESS)
+        return false;
+
+    awakened = touch_handler_wakeup(&port->handler) == TOUCH_OK;
+    return osal_mutex_give(port->operation_mutex) == OSAL_SUCCESS && awakened;
 }
 
 bool drv_adapter_port_touch_register(uint32_t index,
@@ -299,6 +447,7 @@ bool drv_adapter_port_touch_register(uint32_t index,
     port->iic_bus = *bus;
     port->config.iic_bus = &port->iic_bus;
     port->bus_mutex = selected_config->bus_mutex;
+    port->operation_mutex = NULL;
     port->handler.initialized = false;
 
     driver = (touch_drv_t){
@@ -307,6 +456,8 @@ bool drv_adapter_port_touch_register(uint32_t index,
         .init = touch_port_init,
         .read = touch_port_read,
         .get_info = touch_port_get_info,
+        .set_processing_config = touch_port_set_processing_config,
+        .get_processing_config = touch_port_get_processing_config,
         .sleep = touch_port_sleep,
         .wakeup = touch_port_wakeup,
     };
